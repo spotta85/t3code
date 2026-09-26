@@ -61,7 +61,7 @@ const decodeCursorSettings = Schema.decodeSync(CursorSettings);
 const DRIVER_KIND = ProviderDriverKind.make("cursor");
 // cursor-agent updates itself, so the resolved executable is its own updater.
 // No executable means nothing to update, not "whatever is on PATH".
-const UPDATE: ProviderMaintenanceCapabilitiesResolver = {
+export const UPDATE: ProviderMaintenanceCapabilitiesResolver = {
   resolve: (context) =>
     Effect.succeed(
       context

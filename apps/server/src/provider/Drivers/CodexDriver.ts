@@ -83,7 +83,7 @@ function isCodexStandaloneCommandPath(commandPath: string): boolean {
  * (the overlay only carries auth and a few local entries), so the updater
  * runs against `sharedHomePath` rather than the instance's effective home.
  */
-function makeCodexMaintenanceResolver(sharedHomePath: string) {
+export function makeCodexMaintenanceResolver(sharedHomePath: string) {
   return makePackageManagedProviderMaintenanceResolver({
     provider: DRIVER_KIND,
     npmPackageName: "@openai/codex",

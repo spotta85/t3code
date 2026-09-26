@@ -15,7 +15,7 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import type {
-  Capability,
+  AgentDetails,
   Delivery,
   Event,
   Question,
@@ -45,6 +45,7 @@ import {
   toProviderRuntimeEvents,
 } from "./AnyagentEvents.ts";
 import { AnyagentRuntime } from "./AnyagentRuntime.ts";
+import { openableOptions, selectedOptions } from "./AnyagentSnapshot.ts";
 import { type AnyagentAdapterError, toAdapterError } from "./Errors.ts";
 
 type Adapter = ProviderAdapterShape<AnyagentAdapterError>;
@@ -53,10 +54,12 @@ type Adapter = ProviderAdapterShape<AnyagentAdapterError>;
  * The adapter for one T3 driver kind over anyagent `agent` ("claude", "codex", ...).
  * Each thread owns one anyagent session; a fiber per session pumps its events,
  * mapped by AnyagentEvents, into one queue that is `streamEvents`.
+ * `details` is the driver's probe (`null`: it failed); omitted, the adapter probes itself.
  */
 export const makeAnyagentAdapter = (
   kind: ProviderDriverKind,
   agent: string,
+  details?: AgentDetails | null,
 ): Effect.Effect<Adapter, never, AnyagentRuntime | ServerConfig | Scope.Scope> =>
   Effect.gen(function* () {
     const { runtime } = yield* AnyagentRuntime;
@@ -64,7 +67,9 @@ export const makeAnyagentAdapter = (
     const scope = yield* Effect.scope;
     const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
     const threads = new Map<ThreadId, Thread>();
-    const features = yield* probeFeatures(runtime, agent);
+    const probed = details === undefined ? yield* probeDetails(runtime, agent) : details;
+    const features = probed?.capabilities.features ?? [];
+    const openable = openableOptions(probed);
 
     /** Runs one anyagent-ts call; a rejection becomes T3's adapter error. */
     const call = <A>(threadId: ThreadId, method: string, run: () => Promise<A>) =>
@@ -112,13 +117,13 @@ export const makeAnyagentAdapter = (
         }
         yield* stopSession(input.threadId);
         const cwd = input.cwd ?? config.cwd;
-        const model = input.modelSelection?.model;
+        const configure = selectedOptions(input.modelSelection, openable);
         const session = yield* call(input.threadId, "open", () =>
           runtime.open(agent, {
             dir: cwd,
             permission_mode: input.runtimeMode === "full-access" ? "AutoApprove" : "Ask",
             ...(resume !== undefined ? { resume } : {}),
-            ...(model ? { configure: { model } } : {}),
+            ...(Object.keys(configure).length > 0 ? { configure } : {}),
           }),
         );
         const now = yield* nowIso;
@@ -153,9 +158,13 @@ export const makeAnyagentAdapter = (
             issue: "Plan mode is not available through anyagent.",
           });
         }
-        const model = input.modelSelection?.model;
-        if (model && model !== t.session.info.configuration.options.model) {
-          yield* call(t.threadId, "configure", () => t.session.configure("model", model));
+        const { details: live, configuration } = t.session.info;
+        const advertised = new Set(live.config_options.map((o) => o.id));
+        for (const [id, value] of Object.entries(
+          selectedOptions(input.modelSelection, advertised),
+        )) {
+          if (value === configuration.options[id]) continue;
+          yield* call(t.threadId, "configure", () => t.session.configure(id, value));
         }
         const attachments: string[] = [];
         for (const attachment of input.attachments ?? []) {
@@ -422,13 +431,12 @@ function nextEvent(
 }
 
 /** What the agent can do, probed once at build time; a failed probe is logged and offers nothing optional. */
-function probeFeatures(runtime: Runtime, agent: string): Effect.Effect<ReadonlyArray<Capability>> {
+function probeDetails(runtime: Runtime, agent: string): Effect.Effect<AgentDetails | null> {
   return Effect.tryPromise(() => runtime.probe(agent)).pipe(
-    Effect.map((details) => details.capabilities.features),
     Effect.catch((cause) =>
       Effect.logWarning(`anyagent probe of '${agent}' failed; rollback and compaction stay off`, {
         cause,
-      }).pipe(Effect.as([])),
+      }).pipe(Effect.as(null)),
     ),
   );
 }

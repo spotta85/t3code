@@ -51,7 +51,7 @@ const GROK_NPM_PACKAGE = "@xai-official/grok";
 // resolved executable is its own updater. It installs under `GROK_HOME`, so it
 // runs with the instance's environment. No executable means nothing to update,
 // not "whatever is on PATH".
-const UPDATE: ProviderMaintenanceCapabilitiesResolver = {
+export const UPDATE: ProviderMaintenanceCapabilitiesResolver = {
   resolve: (context) =>
     Effect.succeed(
       context

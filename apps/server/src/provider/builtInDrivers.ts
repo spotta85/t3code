@@ -2,55 +2,78 @@
  * BUILT_IN_DRIVERS — the static set of `ProviderDriver`s this build ships
  * with.
  *
- * Every driver that the server knows how to instantiate from settings is
- * listed here. The `ProviderInstanceRegistry` iterates this array when
- * resolving `providerInstances` entries; anything not in the array surfaces
- * as an `"unavailable"` shadow snapshot at runtime (see
+ * Every built-in kind is an `AnyagentDriver`: sessions, snapshots and text
+ * generation go through the one shared `anyagent serve`. Each kind keeps its
+ * display name, settings schema and updater, so the UI is unchanged.
+ * The `ProviderInstanceRegistry` iterates this array when resolving
+ * `providerInstances` entries; anything not in the array surfaces as an
+ * `"unavailable"` shadow snapshot at runtime (see
  * `buildUnavailableProviderSnapshot`).
- *
- * Adding a new first-party driver means:
- *   1. implement `ProviderDriver` in a sibling `Drivers/<Name>Driver.ts`,
- *   2. add it to this array,
- *   3. ensure the runtime layer satisfies its declared `R`.
- *
- * The aggregated `BuiltInDriversEnv` type is the union of every driver's
- * env requirement — the registry layer's `R` is this type, and the runtime
- * layer (ChildProcessSpawner, FileSystem, Path, ServerConfig,
- * OpenCodeRuntime, …) must satisfy it.
  *
  * @module provider/builtInDrivers
  */
-import { ClaudeDriver, type ClaudeDriverEnv } from "./Drivers/ClaudeDriver.ts";
-import { CodexDriver, type CodexDriverEnv } from "./Drivers/CodexDriver.ts";
-import { CursorDriver, type CursorDriverEnv } from "./Drivers/CursorDriver.ts";
-import { GrokDriver, type GrokDriverEnv } from "./Drivers/GrokDriver.ts";
-import { OpenCodeDriver, type OpenCodeDriverEnv } from "./Drivers/OpenCodeDriver.ts";
-import { AntigravityDriver, type AntigravityDriverEnv } from "./Drivers/AntigravityDriver.ts";
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
+import {
+  AntigravitySettings,
+  ClaudeSettings,
+  CodexSettings,
+  CursorSettings,
+  GrokSettings,
+  OpenCodeSettings,
+  ProviderDriverKind,
+} from "@t3tools/contracts";
+
+import { makeAnyagentDriver, type AnyagentDriverEnv } from "./anyagent/AnyagentDriver.ts";
+import { UPDATE as CLAUDE_UPDATE } from "./Drivers/ClaudeDriver.ts";
+import { makeCodexMaintenanceResolver } from "./Drivers/CodexDriver.ts";
+import { UPDATE as CURSOR_UPDATE } from "./Drivers/CursorDriver.ts";
+import { UPDATE as GROK_UPDATE } from "./Drivers/GrokDriver.ts";
+import { UPDATE as OPENCODE_UPDATE } from "./Drivers/OpenCodeDriver.ts";
 import type { AnyProviderDriver } from "./ProviderDriver.ts";
 
 /**
- * Union of infrastructure services required to construct any built-in
- * driver. The registry layer declares `R = BuiltInDriversEnv`; the runtime
- * layer must provide every service in this union.
+ * Infrastructure services required to construct any built-in driver. The
+ * registry layer declares `R = BuiltInDriversEnv`; the runtime layer must
+ * provide every service in it (`AnyagentRuntimeLive` among them).
  */
-export type BuiltInDriversEnv =
-  | ClaudeDriverEnv
-  | CodexDriverEnv
-  | CursorDriverEnv
-  | GrokDriverEnv
-  | OpenCodeDriverEnv
-  | AntigravityDriverEnv;
+export type BuiltInDriversEnv = AnyagentDriverEnv;
 
 /**
- * Ordered list of built-in drivers. Order matters only for tie-breaking in
- * UI presentation — the registry itself is keyed by `driverKind`, so
- * iteration order has no functional effect on instance lookup.
+ * Ordered list of built-in drivers: T3 kind, anyagent agent, and what stays
+ * per kind. Order matters only for tie-breaking in UI presentation.
  */
 export const BUILT_IN_DRIVERS: ReadonlyArray<AnyProviderDriver<BuiltInDriversEnv>> = [
-  CodexDriver,
-  ClaudeDriver,
-  CursorDriver,
-  GrokDriver,
-  OpenCodeDriver,
-  AntigravityDriver,
+  makeAnyagentDriver(ProviderDriverKind.make("codex"), "codex", {
+    displayName: "Codex",
+    settings: CodexSettings,
+    // anyagent runs codex with its default home, so updates target that one.
+    update: makeCodexMaintenanceResolver(NodePath.join(NodeOS.homedir(), ".codex")),
+  }),
+  makeAnyagentDriver(ProviderDriverKind.make("claudeAgent"), "claude", {
+    displayName: "Claude",
+    settings: ClaudeSettings,
+    update: CLAUDE_UPDATE,
+  }),
+  makeAnyagentDriver(ProviderDriverKind.make("cursor"), "cursor", {
+    displayName: "Cursor",
+    settings: CursorSettings,
+    update: CURSOR_UPDATE,
+  }),
+  makeAnyagentDriver(ProviderDriverKind.make("grok"), "grok", {
+    displayName: "Grok",
+    settings: GrokSettings,
+    update: GROK_UPDATE,
+  }),
+  makeAnyagentDriver(ProviderDriverKind.make("opencode"), "opencode", {
+    displayName: "OpenCode",
+    settings: OpenCodeSettings,
+    update: OPENCODE_UPDATE,
+  }),
+  makeAnyagentDriver(ProviderDriverKind.make("antigravity"), "antigravity", {
+    displayName: "Antigravity",
+    settings: AntigravitySettings,
+  }),
 ];
