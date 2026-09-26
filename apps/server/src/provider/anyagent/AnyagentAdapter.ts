@@ -14,15 +14,7 @@ import {
   type ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import type {
-  AgentDetails,
-  Delivery,
-  Event,
-  Question,
-  QuestionAnswer,
-  Runtime,
-  Session,
-} from "anyagent-ts";
+import type { AgentDetails, Delivery, Event, Question, QuestionAnswer, Session } from "anyagent-ts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
@@ -54,22 +46,23 @@ type Adapter = ProviderAdapterShape<AnyagentAdapterError>;
  * The adapter for one T3 driver kind over anyagent `agent` ("claude", "codex", ...).
  * Each thread owns one anyagent session; a fiber per session pumps its events,
  * mapped by AnyagentEvents, into one queue that is `streamEvents`.
- * `details` is the driver's probe (`null`: it failed); omitted, the adapter probes itself.
+ * `latest` reads the driver's newest probe (`null`: none succeeded yet), so capabilities follow
+ * snapshot refreshes; omitted, the adapter probes once itself.
  */
 export const makeAnyagentAdapter = (
   kind: ProviderDriverKind,
   agent: string,
-  details?: AgentDetails | null,
+  latest?: () => AgentDetails | null,
 ): Effect.Effect<Adapter, never, AnyagentRuntime | ServerConfig | Scope.Scope> =>
   Effect.gen(function* () {
-    const { runtime } = yield* AnyagentRuntime;
+    const { use } = yield* AnyagentRuntime;
     const config = yield* ServerConfig;
     const scope = yield* Effect.scope;
     const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
     const threads = new Map<ThreadId, Thread>();
-    const probed = details === undefined ? yield* probeDetails(runtime, agent) : details;
-    const features = probed?.capabilities.features ?? [];
-    const openable = openableOptions(probed);
+    const own = latest ? null : yield* probeDetails(use, agent);
+    const details = latest ?? (() => own);
+    const features = () => details()?.capabilities.features ?? [];
 
     /** Runs one anyagent-ts call; a rejection becomes T3's adapter error. */
     const call = <A>(threadId: ThreadId, method: string, run: () => Promise<A>) =>
@@ -117,14 +110,16 @@ export const makeAnyagentAdapter = (
         }
         yield* stopSession(input.threadId);
         const cwd = input.cwd ?? config.cwd;
-        const configure = selectedOptions(input.modelSelection, openable);
+        const configure = selectedOptions(input.modelSelection, openableOptions(details()));
         const session = yield* call(input.threadId, "open", () =>
-          runtime.open(agent, {
-            dir: cwd,
-            permission_mode: input.runtimeMode === "full-access" ? "AutoApprove" : "Ask",
-            ...(resume !== undefined ? { resume } : {}),
-            ...(Object.keys(configure).length > 0 ? { configure } : {}),
-          }),
+          use((runtime) =>
+            runtime.open(agent, {
+              dir: cwd,
+              permission_mode: input.runtimeMode === "full-access" ? "AutoApprove" : "Ask",
+              ...(resume !== undefined ? { resume } : {}),
+              ...(Object.keys(configure).length > 0 ? { configure } : {}),
+            }),
+          ),
         );
         const now = yield* nowIso;
         const thread: Thread = {
@@ -244,23 +239,23 @@ export const makeAnyagentAdapter = (
       Effect.ignore(stopAll()).pipe(Effect.andThen(Queue.shutdown(events))),
     );
 
-    return {
+    const compaction = {
+      type: "native" as const,
+      start: (threadId: ThreadId) =>
+        requireThread(threadId).pipe(
+          Effect.flatMap((t) => call(threadId, "compact", () => t.session.compact())),
+        ),
+    };
+
+    // Getters: ProviderService reads these per call, and a snapshot refresh can change them.
+    const adapter: Adapter = {
       provider: kind,
-      capabilities: {
-        sessionModelSwitch: "in-session",
-        supportsConversationRollback: features.includes("Rollback"),
+      get capabilities() {
+        return {
+          sessionModelSwitch: "in-session" as const,
+          supportsConversationRollback: features().includes("Rollback"),
+        };
       },
-      ...(features.includes("Compact")
-        ? {
-            compaction: {
-              type: "native" as const,
-              start: (threadId: ThreadId) =>
-                requireThread(threadId).pipe(
-                  Effect.flatMap((t) => call(threadId, "compact", () => t.session.compact())),
-                ),
-            },
-          }
-        : {}),
       startSession,
       sendTurn,
       interruptTurn,
@@ -273,7 +268,12 @@ export const makeAnyagentAdapter = (
       readThread: (threadId) => requireThread(threadId).pipe(Effect.map(snapshot)),
       rollbackThread,
       streamEvents: Stream.fromQueue(events),
-    } satisfies Adapter;
+    };
+    Object.defineProperty(adapter, "compaction", {
+      enumerable: true,
+      get: () => (features().includes("Compact") ? compaction : undefined),
+    });
+    return adapter;
   });
 
 // ---------------------------------------------------------------------------
@@ -431,8 +431,11 @@ function nextEvent(
 }
 
 /** What the agent can do, probed once at build time; a failed probe is logged and offers nothing optional. */
-function probeDetails(runtime: Runtime, agent: string): Effect.Effect<AgentDetails | null> {
-  return Effect.tryPromise(() => runtime.probe(agent)).pipe(
+function probeDetails(
+  use: AnyagentRuntime["Service"]["use"],
+  agent: string,
+): Effect.Effect<AgentDetails | null> {
+  return Effect.tryPromise(() => use((runtime) => runtime.probe(agent))).pipe(
     Effect.catch((cause) =>
       Effect.logWarning(`anyagent probe of '${agent}' failed; rollback and compaction stay off`, {
         cause,

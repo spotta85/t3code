@@ -72,8 +72,12 @@ export function toServerProviderSnapshot(
   });
 }
 
-/** T3's id for an anyagent option id, and back: only `fast` is renamed, to the `fastMode` T3's composer knows. */
-const RENAMED: Readonly<Record<string, string>> = { fast: "fastMode" };
+/**
+ * T3's id for an anyagent option id, and back: the ids T3's composer, settings and stored
+ * selections already use (`fastMode`, `reasoningEffort`). Other ids pass through, so a stored
+ * claude `effort` pick still reaches `effort`.
+ */
+const RENAMED: Readonly<Record<string, string>> = { fast: "fastMode", effort: "reasoningEffort" };
 
 /** The anyagent option id behind a T3 model option id. */
 export function anyagentOptionId(t3Id: string): string {

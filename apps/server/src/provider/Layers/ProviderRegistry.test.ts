@@ -2260,17 +2260,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         }),
       );
 
-      // This test intentionally avoids `mockCommandSpawnerLayer` so the real
-      // `probeCodexAppServerProvider` path runs — including the full
-      // `codex app-server` RPC handshake via `CodexClient.layerChildProcess`.
-      // We point `binaryPath` at a name that cannot exist on any machine so
-      // the real `ChildProcessSpawner` deterministically returns ENOENT; the
-      // probe wraps that as `CodexAppServerSpawnError` and
-      // `checkCodexProviderStatus` turns it into the user-visible "not
-      // installed" error snapshot. If the aggregator's `syncLiveSources`
-      // breaks — the `codex_personal`-never-probes bug we are guarding
-      // against — that snapshot never lands in `getProviders` and the
-      // assertions below fail.
+      // Codex runs through anyagent now: the mock `anyagent serve` knows only the
+      // `mock` agent, so probing `codex` deterministically fails `NotInstalled`
+      // and the driver turns it into the "not installed" error snapshot. If the
+      // aggregator's `syncLiveSources` breaks — the `codex_personal`-never-probes
+      // bug we are guarding against — that snapshot never lands in
+      // `getProviders` and the assertions below fail.
       it.effect("propagates real Codex probe failures to the aggregator at boot", () =>
         Effect.gen(function* () {
           const missingBinary = `t3code_codex_missing_`;
@@ -2375,14 +2370,15 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               "Real Codex probe against a missing binary should surface as 'error' in the aggregator",
             );
             assert.strictEqual(codexPersonal?.installed, false);
-            assert.include(codexPersonal?.message, missingBinary);
-            assert.include(codexPersonal?.message, "Settings → Providers → Codex → Binary path");
+            assert.include(codexPersonal?.message, "not installed");
           }).pipe(Effect.provide(runtimeServices));
         }),
       );
 
       // A binary path change must rebuild Codex and publish its new probe result.
-      it.effect("re-probes when settings change the codex binaryPath", () =>
+      // Skipped: through anyagent, `binaryPath` no longer picks the executable
+      // (docs/ports/t3-code/gaps.md, "Per-instance binary and environment").
+      it.effect.skip("re-probes when settings change the codex binaryPath", () =>
         Effect.gen(function* () {
           const firstMissing = `t3code_codex_first_`;
           const secondMissing = `t3code_codex_second_`;

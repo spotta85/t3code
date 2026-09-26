@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
+  ApprovalRequestId,
   ClaudeSettings,
   CodexSettings,
   ProviderDriverKind,
@@ -19,6 +20,7 @@ import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/unstable/http";
+import type { AgentDetails, Runtime } from "anyagent-ts";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
@@ -26,7 +28,11 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import type { ProviderDriverError } from "../Errors.ts";
 import type { ProviderInstance } from "../ProviderDriver.ts";
 import { makeAnyagentDriver } from "./AnyagentDriver.ts";
-import { makeAnyagentRuntimeLayer } from "./AnyagentRuntime.ts";
+import {
+  AnyagentRuntime,
+  AnyagentRuntimeLive,
+  makeAnyagentRuntimeLayer,
+} from "./AnyagentRuntime.ts";
 
 // The anyagent checkout next to this one; its release binary is built with `--features mock`.
 const ANYAGENT = NodePath.resolve(import.meta.dirname, "../../../../../../anyagent");
@@ -93,29 +99,128 @@ describe("AnyagentDriver over the mock binary", () => {
     ),
   );
 
+  it.live("T3's reasoningEffort pick reaches anyagent's effort option", () =>
+    withRuntime(effortScript(), () =>
+      Effect.gen(function* () {
+        const instance = yield* create(codex, "codex", yield* Scope.make());
+        const [model] = (yield* instance.snapshot.getSnapshot).models;
+        expect(model?.capabilities?.optionDescriptors?.map((d) => d.id)).toEqual([
+          "reasoningEffort",
+        ]);
+        const seen = yield* collect(instance);
+        yield* instance.adapter.startSession({ threadId: A, cwd, runtimeMode: "full-access" });
+        const options = [{ id: "reasoningEffort", value: "low" }];
+        yield* instance.adapter.sendTurn({
+          threadId: A,
+          input: "hi",
+          modelSelection: { instanceId: instance.instanceId, model: "sonnet", options },
+        });
+        yield* waitFor(
+          seen,
+          (e) => e.type === "session.configured" && e.payload.config.effort === "low",
+        );
+      }),
+    ),
+  );
+
   // Review focus 5: two kinds share one `anyagent serve`; closing one leaves the other streaming.
-  it.live("two kinds on one runtime: closing one instance leaves the other streaming", () =>
-    withRuntime("configure", () =>
+  it.live("closing one kind's instance mid-turn of another: that turn still completes", () =>
+    withRuntime("turn", () =>
       Effect.gen(function* () {
         const claudeScope = yield* Scope.make();
         const first = yield* create(claude, "claudeAgent", claudeScope);
         const second = yield* create(codex, "codex", yield* Scope.make());
-        const firstSeen = yield* collect(first);
         const secondSeen = yield* collect(second);
-        yield* first.adapter.startSession({ threadId: A, cwd, runtimeMode: "full-access" });
-        yield* second.adapter.startSession({ threadId: B, cwd, runtimeMode: "full-access" });
-        yield* first.adapter.sendTurn({ threadId: A, input: "hi" });
-        yield* waitFor(firstSeen, (e) => e.type === "turn.completed");
+        yield* first.adapter.startSession({ threadId: A, cwd, runtimeMode: "approval-required" });
+        yield* second.adapter.startSession({ threadId: B, cwd, runtimeMode: "approval-required" });
+        const { turnId } = yield* second.adapter.sendTurn({ threadId: B, input: "hi" });
+        yield* waitFor(secondSeen, (e) => e.type === "request.opened" && e.turnId === turnId);
 
         yield* Scope.close(claudeScope, Exit.void);
+        expect(yield* first.adapter.hasSession(A)).toBe(false);
         expect(yield* second.adapter.hasSession(B)).toBe(true);
-        const { turnId } = yield* second.adapter.sendTurn({ threadId: B, input: "hi" });
+        yield* second.adapter.respondToRequest(B, ApprovalRequestId.make("r1"), "accept");
         yield* waitFor(secondSeen, (e) => e.type === "turn.completed" && e.turnId === turnId);
+        expect(secondSeen.find((e) => e.type === "turn.completed")).toMatchObject({
+          payload: { state: "completed" },
+        });
         expect(secondSeen.every((e) => e.threadId === B && e.provider === "codex")).toBe(true);
-        expect(firstSeen.every((e) => e.threadId === A && e.provider === "claudeAgent")).toBe(true);
       }),
     ),
   );
+
+  it.live("a missing anyagent binary: the instance is built, in error naming the binary", () =>
+    withRuntimeLayer(AnyagentRuntimeLive, () =>
+      Effect.gen(function* () {
+        const bin = "/nonexistent/anyagent";
+        const previous = process.env.ANYAGENT_BIN;
+        process.env.ANYAGENT_BIN = bin;
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            if (previous === undefined) delete process.env.ANYAGENT_BIN;
+            else process.env.ANYAGENT_BIN = previous;
+          }),
+        );
+        const instance = yield* create(claude, "claudeAgent", yield* Scope.make());
+        const snapshot = yield* instance.snapshot.getSnapshot;
+        expect(snapshot).toMatchObject({ status: "error", enabled: true });
+        expect(snapshot.message).toContain(bin);
+        const error = yield* Effect.flip(
+          instance.adapter.startSession({ threadId: A, cwd, runtimeMode: "full-access" }),
+        );
+        expect(error.message).toContain(bin);
+      }),
+    ),
+  );
+
+  it.live("anyagent serve exiting: the next refresh starts a new one", () =>
+    withRuntime("configure", () =>
+      Effect.gen(function* () {
+        const { use } = yield* AnyagentRuntime;
+        const instance = yield* create(claude, "claudeAgent", yield* Scope.make());
+        const exited = yield* Effect.promise(() =>
+          use(async (runtime) => {
+            await runtime.close();
+            return runtime.exited;
+          }),
+        );
+        expect(exited).toBe(0);
+        expect(yield* instance.snapshot.refresh).toMatchObject({ status: "ready" });
+        yield* instance.adapter.startSession({ threadId: A, cwd, runtimeMode: "full-access" });
+        expect(yield* instance.adapter.hasSession(A)).toBe(true);
+      }),
+    ),
+  );
+
+  it.live("capabilities follow the newest probe: a failed boot probe, then a good refresh", () => {
+    let probes = 0;
+    const details: AgentDetails = {
+      version: "1",
+      auth: "Unknown",
+      capabilities: { features: ["Rollback", "Compact"], mcp_transports: [] },
+      config_options: [],
+      commands: [],
+    };
+    const runtime = { probe: async () => details } as unknown as Runtime;
+    const flaky = Layer.succeed(AnyagentRuntime, {
+      use: (f) => (probes++ === 0 ? Promise.reject(new Error("boot probe failed")) : f(runtime)),
+    });
+    return withRuntimeLayer(flaky, () =>
+      Effect.gen(function* () {
+        const instance = yield* create(claude, "claudeAgent", yield* Scope.make());
+        expect(instance.adapter.capabilities.supportsConversationRollback).toBe(false);
+        expect(instance.adapter.compaction).toBeUndefined();
+        // One refresh may be the boot one, which reuses create's (failed) probe; the next probes.
+        yield* instance.snapshot.refresh;
+        expect(yield* instance.snapshot.refresh).toMatchObject({
+          status: "ready",
+          supportsConversationRollback: true,
+        });
+        expect(instance.adapter.capabilities.supportsConversationRollback).toBe(true);
+        expect(instance.adapter.compaction?.type).toBe("native");
+      }),
+    );
+  });
 
   it.live("text generation asks anyagent for one reply and decodes its JSON", () =>
     withRuntime(titleScript(), () =>
@@ -141,8 +246,16 @@ function withRuntime<A, E>(script: string, body: () => Effect.Effect<A, E, Env>)
   const mock = script.endsWith(".json")
     ? script
     : NodePath.join(ANYAGENT, `packages/mock-scripts/${script}.json`);
+  return withRuntimeLayer(makeAnyagentRuntimeLayer({ bin: BIN, mock }), body);
+}
+
+/** Runs `body` with every service the driver needs and `runtime` as the anyagent runtime. */
+function withRuntimeLayer<A, E>(
+  runtime: Layer.Layer<AnyagentRuntime>,
+  body: () => Effect.Effect<A, E, Env>,
+) {
   const layer = Layer.mergeAll(
-    makeAnyagentRuntimeLayer({ bin: BIN, mock }),
+    runtime,
     ServerConfig.layerTest(cwd, { prefix: "t3-anyagent-driver-" }),
     ServerSettingsService.layerTest(),
     Layer.mock(BackgroundPolicy.BackgroundPolicy)({
@@ -199,12 +312,37 @@ function waitFor(events: ProviderRuntimeEvent[], match: (e: ProviderRuntimeEvent
 
 /** A mock script whose one turn replies with a thread title as JSON. */
 function titleScript(): string {
-  const file = NodePath.join(NodeFS.mkdtempSync(NodePath.join(cwd, "t3-title-")), "title.json");
   const text = JSON.stringify({ title: "Fix login crash" });
-  const turn = [
+  return writeScript("title", { turns: [textTurn(text)] });
+}
+
+/** A mock script advertising a `model` and an `effort` option, with one text turn. */
+function effortScript(): string {
+  const select = (id: string, values: string[]) => ({
+    id,
+    name: id,
+    category: null,
+    kind: {
+      Select: { choices: values.map((value) => ({ value, label: value, description: null })) },
+    },
+    current: values[0],
+    live: true,
+  });
+  return writeScript("effort", {
+    options: [select("model", ["sonnet", "opus"]), select("effort", ["high", "low"])],
+    turns: [textTurn("hi")],
+  });
+}
+
+function textTurn(text: string) {
+  return [
     { Emit: { TextDelta: { message_id: "m1", text } } },
     { End: { Completed: { source: "Protocol" } } },
   ];
-  NodeFS.writeFileSync(file, JSON.stringify({ turns: [turn] }));
+}
+
+function writeScript(name: string, script: object): string {
+  const file = NodePath.join(NodeFS.mkdtempSync(NodePath.join(cwd, `t3-${name}-`)), `${name}.json`);
+  NodeFS.writeFileSync(file, JSON.stringify(script));
   return file;
 }

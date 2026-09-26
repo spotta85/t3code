@@ -6,7 +6,7 @@
  * @module AnyagentDriver
  */
 import type { CustomModelSetting, ProviderDriverKind } from "@t3tools/contracts";
-import { AnyagentError, type Runtime } from "anyagent-ts";
+import { type AgentDetails, AnyagentError } from "anyagent-ts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -69,8 +69,8 @@ export type AnyagentDriverEnv =
 
 /**
  * The driver for T3 kind `kind` over anyagent agent `agent`. `create` probes the
- * agent once (enabled instances only) and hands that probe to the snapshot and
- * the adapter; later snapshot refreshes probe again.
+ * agent once (enabled instances only) for the snapshot and the adapter; each
+ * snapshot refresh probes again, and the adapter reads the newest good probe.
  */
 export const makeAnyagentDriver = (
   kind: ProviderDriverKind,
@@ -83,18 +83,25 @@ export const makeAnyagentDriver = (
   defaultConfig: () => decodeDefaults(spec.settings),
   create: ({ instanceId, displayName, accentColor, enabled, config }) =>
     Effect.gen(function* () {
-      const { runtime } = yield* AnyagentRuntime;
+      const { use } = yield* AnyagentRuntime;
       const serverSettings = yield* ServerSettingsService;
       const httpClient = yield* HttpClient.HttpClient;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
+      // The newest successful probe: the adapter's capabilities and the options `open` may set.
+      let latest: AgentDetails | null = null;
       const probe: Effect.Effect<AgentProbe | undefined> = enabled
-        ? Effect.promise(() => probeAgent(runtime, agent))
+        ? Effect.promise(() => probeAgent(use, agent)).pipe(
+            Effect.tap((result) =>
+              Effect.sync(() => {
+                if ("details" in result) latest = result.details;
+              }),
+            ),
+          )
         : Effect.succeed(undefined);
-      // Shared with the adapter; the boot refresh takes it instead of spawning the agent again.
+      // The boot refresh takes this probe instead of spawning the agent again.
       let pending = yield* probe;
-      const details = pending && "details" in pending ? pending.details : null;
 
       const continuationIdentity = defaultProviderContinuationIdentity({
         driverKind: kind,
@@ -171,8 +178,8 @@ export const makeAnyagentDriver = (
         accentColor,
         enabled,
         snapshot,
-        adapter: yield* makeAnyagentAdapter(kind, agent, details),
-        textGeneration: yield* makeAnyagentTextGeneration(agent, openableOptions(details)),
+        adapter: yield* makeAnyagentAdapter(kind, agent, () => latest),
+        textGeneration: yield* makeAnyagentTextGeneration(agent, () => openableOptions(latest)),
       } satisfies ProviderInstance;
     }),
 });
@@ -185,14 +192,22 @@ export const makeAnyagentDriver = (
  * Probes the agent. A failure is a result: a missing agent carries anyagent's
  * install hint (from `discover`), anything else its error.
  */
-async function probeAgent(runtime: Runtime, agent: string): Promise<AgentProbe> {
+async function probeAgent(
+  use: AnyagentRuntime["Service"]["use"],
+  agent: string,
+): Promise<AgentProbe> {
   try {
-    return { details: await runtime.probe(agent) };
+    return { details: await use((runtime) => runtime.probe(agent)) };
   } catch (cause) {
+    // A plain Error here is `anyagent serve` failing to start (missing binary, spawn error).
     const error =
-      cause instanceof AnyagentError ? `${cause.kind}: ${cause.message}` : String(cause);
+      cause instanceof AnyagentError
+        ? `${cause.kind}: ${cause.message}`
+        : cause instanceof Error
+          ? cause.message
+          : String(cause);
     if (!(cause instanceof AnyagentError && cause.kind === "NotInstalled")) return { error };
-    const report = await runtime.discover().catch(() => undefined);
+    const report = await use((runtime) => runtime.discover()).catch(() => undefined);
     const missing = report?.missing.find((m) => m.id === agent);
     return { error, installHint: missing?.install_hint ?? `${agent} is not installed.` };
   }

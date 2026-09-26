@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 import { ProviderDriverKind, ProviderInstanceId, ServerProvider } from "@t3tools/contracts";
 import type { AgentDetails } from "anyagent-ts";
 
-import { anyagentOptionId, toServerProviderSnapshot } from "./AnyagentSnapshot.ts";
+import { anyagentOptionId, selectedOptions, toServerProviderSnapshot } from "./AnyagentSnapshot.ts";
 
 const KIND = ProviderDriverKind.make("claudeAgent");
 const AT = "2026-09-26T00:00:00.000Z";
@@ -107,7 +107,7 @@ describe("toServerProviderSnapshot", () => {
     const descriptors = [
       { id: "fastMode", label: "Fast mode", type: "boolean", currentValue: false },
       {
-        id: "effort",
+        id: "reasoningEffort",
         label: "Reasoning effort",
         type: "select",
         options: [
@@ -209,13 +209,32 @@ describe("toServerProviderSnapshot", () => {
     ]);
     expect(snapshot.models[2]?.capabilities?.optionDescriptors?.map((d) => d.id)).toEqual([
       "fastMode",
-      "effort",
+      "reasoningEffort",
     ]);
   });
 
-  it("T3 option ids map back to anyagent's", () => {
+  it("T3 option ids map back to anyagent's; a stored claude `effort` pick passes through", () => {
     expect(anyagentOptionId("fastMode")).toBe("fast");
+    expect(anyagentOptionId("reasoningEffort")).toBe("effort");
     expect(anyagentOptionId("effort")).toBe("effort");
+    expect(anyagentOptionId("serviceTier")).toBe("serviceTier");
+  });
+
+  it("T3's default text-generation effort (reasoningEffort: low) is selected as effort", () => {
+    const selection = {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5.6-sol",
+      options: [
+        { id: "reasoningEffort", value: "low" },
+        { id: "fastMode", value: false },
+        { id: "contextWindow", value: "1m" },
+      ],
+    };
+    expect(selectedOptions(selection, new Set(["model", "effort", "fast"]))).toEqual({
+      model: "gpt-5.6-sol",
+      effort: "low",
+      fast: false,
+    });
   });
 });
 

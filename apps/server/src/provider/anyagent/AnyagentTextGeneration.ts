@@ -33,11 +33,11 @@ const TIMEOUT = "180 seconds";
 
 /**
  * Text generation for `agent`: each call builds T3's prompt, asks anyagent for one reply,
- * and decodes the JSON in it. `advertised` limits which picked options reach the agent.
+ * and decodes the JSON in it. `advertised()` limits which picked options reach the agent.
  */
-export const makeAnyagentTextGeneration = (agent: string, advertised: ReadonlySet<string>) =>
+export const makeAnyagentTextGeneration = (agent: string, advertised: () => ReadonlySet<string>) =>
   Effect.gen(function* () {
-    const { runtime } = yield* AnyagentRuntime;
+    const { use } = yield* AnyagentRuntime;
 
     /** One reply for `prompt` in `cwd`, decoded with `schema`; every failure is a TextGenerationError. */
     const runJson = <S extends Schema.Top>(
@@ -48,10 +48,12 @@ export const makeAnyagentTextGeneration = (agent: string, advertised: ReadonlySe
     ): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
       Effect.tryPromise({
         try: () =>
-          runtime.generate(
-            agent,
-            { dir: cwd, configure: selectedOptions(modelSelection, advertised) },
-            prompt,
+          use((runtime) =>
+            runtime.generate(
+              agent,
+              { dir: cwd, configure: selectedOptions(modelSelection, advertised()) },
+              prompt,
+            ),
           ),
         catch: (cause) =>
           failure(operation, `anyagent generate failed: ${messageOf(cause)}`, cause),
