@@ -46,7 +46,7 @@ const question: Request = {
 /** Maps one event, checking every result decodes as a T3 runtime event. */
 function map(
   kind: EventKind,
-  ctx: Partial<Pick<EventContext, "requests" | "textMessages">> = {},
+  ctx: Partial<Pick<EventContext, "requests" | "textMessages" | "tools">> = {},
 ): ReadonlyArray<ProviderRuntimeEvent> {
   const out = toProviderRuntimeEvents(context(ctx), event(kind));
   for (const e of out) decode(e);
@@ -104,7 +104,7 @@ describe("toProviderRuntimeEvents", () => {
     expect(map({ UserMessage: { message_id: "u1", text: "steer" } })).toEqual([]);
   });
 
-  it("ToolUpdated -> item.started / item.updated / item.completed by status", () => {
+  it("ToolUpdated -> item.started when first seen, item.updated after, item.completed when done", () => {
     expect(map({ ToolUpdated: tool("Pending") })).toEqual([
       {
         ...base,
@@ -120,7 +120,8 @@ describe("toProviderRuntimeEvents", () => {
         },
       },
     ]);
-    expect(map({ ToolUpdated: tool("Running") })).toMatchObject([
+    const seen = { tools: new Set(["tool-1"]) };
+    expect(map({ ToolUpdated: tool("Running") }, seen)).toMatchObject([
       { type: "item.updated", payload: { status: "inProgress" } },
     ]);
     expect(map({ ToolUpdated: tool("Completed") })).toMatchObject([
@@ -132,6 +133,18 @@ describe("toProviderRuntimeEvents", () => {
     expect(
       map({ ToolUpdated: { ...tool("Completed"), kind: "Edit", input: { Path: "a.rs" } } }),
     ).toMatchObject([{ payload: { itemType: "file_change", detail: "a.rs" } }]);
+  });
+
+  it("ToolUpdated first seen already Running (claude, codex) -> item.started", () => {
+    expect(map({ ToolUpdated: tool("Running") })).toMatchObject([
+      { type: "item.started", payload: { status: "inProgress" } },
+    ]);
+  });
+
+  it("ToolUpdated repeated Pending snapshot -> item.updated, not a second item.started", () => {
+    expect(map({ ToolUpdated: tool("Pending") }, { tools: new Set(["tool-1"]) })).toMatchObject([
+      { type: "item.updated", payload: { status: "inProgress" } },
+    ]);
   });
 
   it("ToolOutputDelta -> command_output content.delta", () => {
@@ -372,6 +385,7 @@ function context(extra: Partial<EventContext> = {}): EventContext {
     sessionKey: "k",
     requests: new Map(),
     textMessages: new Set(),
+    tools: new Set(),
     ...extra,
   };
 }

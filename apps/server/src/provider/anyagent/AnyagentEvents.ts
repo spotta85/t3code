@@ -46,6 +46,8 @@ export interface EventContext {
   readonly requests: ReadonlyMap<string, OpenRequest>;
   /** Messages that carried assistant text; read by MessageEnded. */
   readonly textMessages: ReadonlySet<string>;
+  /** Tool ids already reported; read by ToolUpdated. */
+  readonly tools: ReadonlySet<string>;
 }
 
 /** An open anyagent request, plus T3's answer once it gives one. */
@@ -75,7 +77,7 @@ const CHOICES: Record<PermissionChoice, ProviderApprovalOption> = {
  * | ReasoningDelta           | content.delta (reasoning_text)                            |
  * | MessageEnded             | item.completed (assistant_message, or reasoning)          |
  * | UserMessage              | none: T3 records its own user messages                    |
- * | ToolUpdated              | item.started (Pending), item.updated (Running), item.completed |
+ * | ToolUpdated              | item.started (first seen), item.updated, item.completed (done) |
  * | ToolOutputDelta          | content.delta (command_output)                            |
  * | PlanUpdated              | turn.plan.updated                                         |
  * | RequestOpened Permission | request.opened, options = offered choices as T3 decisions |
@@ -126,7 +128,10 @@ export function toProviderRuntimeEvents(
       },
     ];
   }
-  if ("ToolUpdated" in k) return [toolEvent(base, k.ToolUpdated, ev.turn_info?.parent_tool_id)];
+  if ("ToolUpdated" in k) {
+    const tool = k.ToolUpdated;
+    return [toolEvent(base, tool, ctx.tools.has(tool.id), ev.turn_info?.parent_tool_id)];
+  }
   if ("PlanUpdated" in k) {
     const plan = k.PlanUpdated.entries.map((e) => ({
       step: e.text,
@@ -258,18 +263,15 @@ function delta(
   };
 }
 
-/** A tool snapshot as a T3 item: started while Pending, updated while Running, then completed. */
+/** A tool snapshot as a T3 item: started when first seen, updated after, completed once it finishes. */
 function toolEvent(
   base: Base,
   tool: ToolUpdate,
+  seen: boolean,
   parent: string | null | undefined,
 ): ProviderRuntimeEvent {
-  const type =
-    tool.status === "Pending"
-      ? "item.started"
-      : tool.status === "Running"
-        ? "item.updated"
-        : "item.completed";
+  const running = tool.status === "Pending" || tool.status === "Running";
+  const type = !running ? "item.completed" : seen ? "item.updated" : "item.started";
   const title = tool.title.trim();
   const detail = inputText(tool.input);
   return {

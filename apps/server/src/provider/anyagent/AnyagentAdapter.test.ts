@@ -187,6 +187,40 @@ describe("AnyagentAdapter over the mock binary", () => {
     ),
   );
 
+  it.live("an attachment that cannot be resolved fails the turn instead of being dropped", () =>
+    run("turn", (adapter, _waitFor, seen) =>
+      Effect.gen(function* () {
+        yield* adapter.startSession({ threadId: A, cwd, runtimeMode: "approval-required" });
+        const attachment = {
+          type: "video",
+          id: "clip-1",
+          name: "clip.mp4",
+          mimeType: "video/mp4",
+          sizeBytes: 10,
+        };
+        const error = yield* Effect.flip(
+          adapter.sendTurn({ threadId: A, input: "look", attachments: [attachment] }),
+        );
+        expect(error).toMatchObject({ _tag: "ProviderAdapterRequestError" });
+        expect(error.message).toContain("clip-1");
+        expect(seen().some((e) => e.type === "turn.started")).toBe(false);
+      }),
+    ),
+  );
+
+  it.live("rollback of 0 turns fails typed and keeps the history", () =>
+    run("chatter", (adapter, waitFor) =>
+      Effect.gen(function* () {
+        yield* adapter.startSession({ threadId: A, cwd, runtimeMode: "approval-required" });
+        const { turnId } = yield* adapter.sendTurn({ threadId: A, input: "hi" });
+        yield* waitFor((e) => e.type === "turn.completed");
+        const error = yield* Effect.flip(adapter.rollbackThread(A, 0));
+        expect(error).toMatchObject({ _tag: "ProviderAdapterValidationError" });
+        expect((yield* adapter.readThread(A)).turns.map((t) => t.id)).toEqual([turnId]);
+      }),
+    ),
+  );
+
   it.live("plan mode fails typed: anyagent has no plan mode (gaps.md)", () =>
     run("turn", (adapter) =>
       Effect.gen(function* () {

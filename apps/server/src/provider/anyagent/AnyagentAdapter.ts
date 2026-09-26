@@ -133,6 +133,7 @@ export const makeAnyagentAdapter = (
           turns: new Map(),
           requests: new Map(),
           textMessages: new Set(),
+          tools: new Set(),
           history: [],
           activeTurnId: undefined,
         };
@@ -156,10 +157,18 @@ export const makeAnyagentAdapter = (
         if (model && model !== t.session.info.configuration.options.model) {
           yield* call(t.threadId, "configure", () => t.session.configure("model", model));
         }
-        const attachments = (input.attachments ?? []).flatMap(
-          (attachment) =>
-            resolveAttachmentPath({ attachmentsDir: config.attachmentsDir, attachment }) ?? [],
-        );
+        const attachments: string[] = [];
+        for (const attachment of input.attachments ?? []) {
+          const path = resolveAttachmentPath({ attachmentsDir: config.attachmentsDir, attachment });
+          if (!path) {
+            return yield* new ProviderAdapterRequestError({
+              provider: kind,
+              method: "prompt",
+              detail: `Invalid attachment id '${attachment.id}'.`,
+            });
+          }
+          attachments.push(path);
+        }
         const delivery = yield* call(t.threadId, "prompt", () =>
           t.session.prompt(input.input ?? "", attachments),
         );
@@ -210,6 +219,13 @@ export const makeAnyagentAdapter = (
     const rollbackThread: Adapter["rollbackThread"] = (threadId, numTurns) =>
       Effect.gen(function* () {
         const t = yield* requireThread(threadId);
+        if (!Number.isInteger(numTurns) || numTurns < 1) {
+          return yield* new ProviderAdapterValidationError({
+            provider: kind,
+            operation: "rollbackThread",
+            issue: "numTurns must be an integer >= 1.",
+          });
+        }
         yield* call(threadId, "rollback", () => t.session.rollback(numTurns, "Conversation"));
         t.history.splice(-numTurns);
         return snapshot(t);
@@ -269,6 +285,7 @@ interface Thread {
   readonly turns: Map<string, TurnId>;
   readonly requests: Map<string, OpenRequest>;
   readonly textMessages: Set<string>;
+  readonly tools: Set<string>;
   /** T3 turn ids in start order, for readThread and rollback. */
   readonly history: TurnId[];
   activeTurnId: TurnId | undefined;
@@ -283,13 +300,20 @@ function onEvent(
   ev: Event,
 ): ReadonlyArray<ProviderRuntimeEvent> {
   const turnId = turnIdOf(t, ev);
-  const ctx = { ...context(kind, t), turnId, requests: t.requests, textMessages: t.textMessages };
+  const ctx = {
+    ...context(kind, t),
+    turnId,
+    requests: t.requests,
+    textMessages: t.textMessages,
+    tools: t.tools,
+  };
   const out = toProviderRuntimeEvents(ctx, ev);
   const k = ev.kind;
   if (out[0]) t.updatedAt = out[0].createdAt;
   if (typeof k !== "object") return out;
   if ("TextDelta" in k) t.textMessages.add(k.TextDelta.message_id);
   if ("MessageEnded" in k) t.textMessages.delete(k.MessageEnded.message_id);
+  if ("ToolUpdated" in k) t.tools.add(k.ToolUpdated.id);
   if ("RequestOpened" in k) {
     const request = k.RequestOpened;
     t.requests.set("Permission" in request ? request.Permission.id : request.Question.id, {
@@ -397,10 +421,14 @@ function nextEvent(
   );
 }
 
-/** What the agent can do, probed once at build time; an agent that cannot be probed offers nothing optional. */
+/** What the agent can do, probed once at build time; a failed probe is logged and offers nothing optional. */
 function probeFeatures(runtime: Runtime, agent: string): Effect.Effect<ReadonlyArray<Capability>> {
   return Effect.tryPromise(() => runtime.probe(agent)).pipe(
     Effect.map((details) => details.capabilities.features),
-    Effect.orElseSucceed(() => []),
+    Effect.catch((cause) =>
+      Effect.logWarning(`anyagent probe of '${agent}' failed; rollback and compaction stay off`, {
+        cause,
+      }).pipe(Effect.as([])),
+    ),
   );
 }
