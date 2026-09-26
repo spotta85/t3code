@@ -4,7 +4,11 @@
  *
  * @module AnyagentTextGeneration
  */
-import { type ModelSelection, TextGenerationError } from "@t3tools/contracts";
+import {
+  type ModelSelection,
+  type ProviderDriverKind,
+  TextGenerationError,
+} from "@t3tools/contracts";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import { extractJsonObject } from "@t3tools/shared/schemaJson";
 import * as Effect from "effect/Effect";
@@ -32,10 +36,14 @@ type Operation = keyof Service;
 const TIMEOUT = "180 seconds";
 
 /**
- * Text generation for `agent`: each call builds T3's prompt, asks anyagent for one reply,
+ * Text generation for `kind` over `agent`: each call builds T3's prompt, asks anyagent for one reply,
  * and decodes the JSON in it. `advertised()` limits which picked options reach the agent.
  */
-export const makeAnyagentTextGeneration = (agent: string, advertised: () => ReadonlySet<string>) =>
+export const makeAnyagentTextGeneration = (
+  kind: ProviderDriverKind,
+  agent: string,
+  advertised: () => ReadonlySet<string>,
+) =>
   Effect.gen(function* () {
     const { use } = yield* AnyagentRuntime;
 
@@ -51,7 +59,7 @@ export const makeAnyagentTextGeneration = (agent: string, advertised: () => Read
           use((runtime) =>
             runtime.generate(
               agent,
-              { dir: cwd, configure: selectedOptions(modelSelection, advertised()) },
+              { dir: cwd, configure: selectedOptions(kind, modelSelection, advertised()) },
               prompt,
             ),
           ),

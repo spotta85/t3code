@@ -51,7 +51,9 @@ export function toServerProviderSnapshot(
 ): ServerProviderDraft {
   const details = probe && "details" in probe ? probe.details : undefined;
   const options = details?.config_options ?? [];
-  const capabilities = createModelCapabilities({ optionDescriptors: optionDescriptors(options) });
+  const capabilities = createModelCapabilities({
+    optionDescriptors: optionDescriptors(kind, options),
+  });
   return buildServerProvider({
     driver: kind,
     presentation: {
@@ -73,19 +75,30 @@ export function toServerProviderSnapshot(
 }
 
 /**
- * T3's id for an anyagent option id, and back: the ids T3's composer, settings and stored
- * selections already use (`fastMode`, `reasoningEffort`). Other ids pass through, so a stored
- * claude `effort` pick still reaches `effort`.
+ * The id T3's own descriptors used for anyagent's `effort` per kind, so the composer, settings
+ * and stored picks keep working (the web drops picks whose id no descriptor has). Other kinds,
+ * claude included, keep `effort`.
  */
-const RENAMED: Readonly<Record<string, string>> = { fast: "fastMode", effort: "reasoningEffort" };
+const EFFORT_ID: Readonly<Record<string, string>> = {
+  codex: "reasoningEffort",
+  grok: "reasoningEffort",
+  cursor: "reasoning",
+  opencode: "variant",
+};
 
-/** The anyagent option id behind a T3 model option id. */
-export function anyagentOptionId(t3Id: string): string {
-  return Object.entries(RENAMED).find(([, t3]) => t3 === t3Id)?.[0] ?? t3Id;
+/** T3's id for each renamed anyagent option id of `kind`; unlisted ids pass through. */
+function renamed(kind: ProviderDriverKind): Readonly<Record<string, string>> {
+  return { fast: "fastMode", effort: EFFORT_ID[kind] ?? "effort" };
+}
+
+/** The anyagent option id behind a T3 model option id of `kind`. */
+export function anyagentOptionId(kind: ProviderDriverKind, t3Id: string): string {
+  return Object.entries(renamed(kind)).find(([, t3]) => t3 === t3Id)?.[0] ?? t3Id;
 }
 
 /** The anyagent options a T3 model selection sets (its model, then each picked option), kept to `advertised` ids. */
 export function selectedOptions(
+  kind: ProviderDriverKind,
   selection: ModelSelection | undefined,
   advertised: ReadonlySet<string>,
 ): Record<string, ConfigValue> {
@@ -93,7 +106,7 @@ export function selectedOptions(
   const picked: Array<[string, ConfigValue]> = [
     ["model", selection.model],
     ...(selection.options ?? []).map((o): [string, ConfigValue] => [
-      anyagentOptionId(o.id),
+      anyagentOptionId(kind, o.id),
       o.value,
     ]),
   ];
@@ -189,11 +202,15 @@ function agentModels(
 }
 
 /** anyagent's options T3 does not own, as model option descriptors (select or boolean). */
-function optionDescriptors(options: ReadonlyArray<ConfigOption>): ProviderOptionDescriptor[] {
+function optionDescriptors(
+  kind: ProviderDriverKind,
+  options: ReadonlyArray<ConfigOption>,
+): ProviderOptionDescriptor[] {
+  const rename = renamed(kind);
   return options
     .filter((o) => !T3_OWNED.has(o.id))
     .map((o) => {
-      const id = RENAMED[o.id] ?? o.id;
+      const id = rename[o.id] ?? o.id;
       const label = o.name.trim() || o.id;
       if (o.kind === "Boolean") {
         return buildBooleanOptionDescriptor({

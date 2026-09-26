@@ -107,7 +107,7 @@ describe("toServerProviderSnapshot", () => {
     const descriptors = [
       { id: "fastMode", label: "Fast mode", type: "boolean", currentValue: false },
       {
-        id: "reasoningEffort",
+        id: "effort",
         label: "Reasoning effort",
         type: "select",
         options: [
@@ -209,15 +209,49 @@ describe("toServerProviderSnapshot", () => {
     ]);
     expect(snapshot.models[2]?.capabilities?.optionDescriptors?.map((d) => d.id)).toEqual([
       "fastMode",
-      "reasoningEffort",
+      "effort",
     ]);
   });
 
-  it("T3 option ids map back to anyagent's; a stored claude `effort` pick passes through", () => {
-    expect(anyagentOptionId("fastMode")).toBe("fast");
-    expect(anyagentOptionId("reasoningEffort")).toBe("effort");
-    expect(anyagentOptionId("effort")).toBe("effort");
-    expect(anyagentOptionId("serviceTier")).toBe("serviceTier");
+  it("effort keeps the id T3's own descriptors used for each kind", () => {
+    const effortId = (kind: string) =>
+      toServerProviderSnapshot(
+        ProviderDriverKind.make(kind),
+        { details: claude },
+        settings,
+        AT,
+      ).models[0]?.capabilities?.optionDescriptors?.map((d) => d.id);
+    expect(effortId("claudeAgent")).toEqual(["fastMode", "effort"]);
+    expect(effortId("codex")).toEqual(["fastMode", "reasoningEffort"]);
+    expect(effortId("grok")).toEqual(["fastMode", "reasoningEffort"]);
+    expect(effortId("cursor")).toEqual(["fastMode", "reasoning"]);
+    expect(effortId("opencode")).toEqual(["fastMode", "variant"]);
+    expect(effortId("antigravity")).toEqual(["fastMode", "effort"]);
+  });
+
+  it("T3 option ids map back to anyagent's per kind", () => {
+    const codex = ProviderDriverKind.make("codex");
+    expect(anyagentOptionId(KIND, "fastMode")).toBe("fast");
+    expect(anyagentOptionId(KIND, "effort")).toBe("effort");
+    expect(anyagentOptionId(codex, "reasoningEffort")).toBe("effort");
+    expect(anyagentOptionId(ProviderDriverKind.make("cursor"), "reasoning")).toBe("effort");
+    expect(anyagentOptionId(codex, "serviceTier")).toBe("serviceTier");
+  });
+
+  it("a stored claude `effort: max` pick matches claude's descriptor and reaches anyagent as effort", () => {
+    const snapshot = toServerProviderSnapshot(KIND, { details: claude }, settings, AT);
+    const ids = snapshot.models[0]?.capabilities?.optionDescriptors?.map((d) => d.id) ?? [];
+    const selection = {
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      model: "default",
+      options: [{ id: "effort", value: "max" }],
+    };
+    // The web keeps only picks whose id a descriptor has.
+    expect(selection.options.every((o) => ids.includes(o.id))).toBe(true);
+    expect(selectedOptions(KIND, selection, new Set(["model", "effort"]))).toEqual({
+      model: "default",
+      effort: "max",
+    });
   });
 
   it("T3's default text-generation effort (reasoningEffort: low) is selected as effort", () => {
@@ -230,7 +264,8 @@ describe("toServerProviderSnapshot", () => {
         { id: "contextWindow", value: "1m" },
       ],
     };
-    expect(selectedOptions(selection, new Set(["model", "effort", "fast"]))).toEqual({
+    const codex = ProviderDriverKind.make("codex");
+    expect(selectedOptions(codex, selection, new Set(["model", "effort", "fast"]))).toEqual({
       model: "gpt-5.6-sol",
       effort: "low",
       fast: false,

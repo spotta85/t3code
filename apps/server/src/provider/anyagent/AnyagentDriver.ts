@@ -179,7 +179,9 @@ export const makeAnyagentDriver = (
         enabled,
         snapshot,
         adapter: yield* makeAnyagentAdapter(kind, agent, () => latest),
-        textGeneration: yield* makeAnyagentTextGeneration(agent, () => openableOptions(latest)),
+        textGeneration: yield* makeAnyagentTextGeneration(kind, agent, () =>
+          openableOptions(latest),
+        ),
       } satisfies ProviderInstance;
     }),
 });

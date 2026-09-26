@@ -110,7 +110,7 @@ export const makeAnyagentAdapter = (
         }
         yield* stopSession(input.threadId);
         const cwd = input.cwd ?? config.cwd;
-        const configure = selectedOptions(input.modelSelection, openableOptions(details()));
+        const configure = selectedOptions(kind, input.modelSelection, openableOptions(details()));
         const session = yield* call(input.threadId, "open", () =>
           use((runtime) =>
             runtime.open(agent, {
@@ -156,7 +156,7 @@ export const makeAnyagentAdapter = (
         const { details: live, configuration } = t.session.info;
         const advertised = new Set(live.config_options.map((o) => o.id));
         for (const [id, value] of Object.entries(
-          selectedOptions(input.modelSelection, advertised),
+          selectedOptions(kind, input.modelSelection, advertised),
         )) {
           if (value === configuration.options[id]) continue;
           yield* call(t.threadId, "configure", () => t.session.configure(id, value));
