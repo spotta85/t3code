@@ -16,7 +16,7 @@ import {
   type ProviderRuntimeEvent,
   ThreadId,
 } from "@t3tools/contracts";
-import type { McpTransport, OpenOptions, Runtime } from "anyagent-ts";
+import type { Answer, McpTransport, OpenOptions, Runtime } from "anyagent-ts";
 
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
@@ -313,6 +313,37 @@ describe("AnyagentAdapter over the mock binary", () => {
     ),
   );
 
+  it.live(
+    "the permission request after a plan is declined by the adapter; a later one is surfaced",
+    () =>
+      run("plan-exit", (adapter, waitFor, seen, _opened, answered) =>
+        Effect.gen(function* () {
+          yield* adapter.startSession({ threadId: A, cwd, runtimeMode: "approval-required" });
+          const plan = yield* adapter.sendTurn({
+            threadId: A,
+            input: "plan",
+            interactionMode: "plan",
+          });
+          yield* waitFor((e) => e.type === "turn.completed" && e.turnId === plan.turnId);
+          expect(answered()).toEqual([{ request: "exit-1", answer: { Permission: "DenyOnce" } }]);
+          expect(summary(seen().filter((e) => e.turnId === plan.turnId))).toEqual([
+            "turn.started",
+            "turn.proposed.completed",
+            "content.delta:Kept the plan.",
+            "item.completed:assistant_message",
+            "turn.completed:completed",
+          ]);
+
+          // The turn ended, so the next turn's permission reaches T3 as usual.
+          const next = yield* adapter.sendTurn({ threadId: A, input: "go" });
+          yield* waitFor((e) => e.type === "request.opened" && e.turnId === next.turnId);
+          yield* adapter.respondToRequest(A, ApprovalRequestId.make("r2"), "accept");
+          yield* waitFor((e) => e.type === "turn.completed" && e.turnId === next.turnId);
+          expect(answered().map((a) => a.request)).toEqual(["exit-1", "r2"]);
+        }),
+      ),
+  );
+
   it.live("a plan turn on an agent whose mode offers no plan fails typed", () =>
     run("turn", (adapter) =>
       Effect.gen(function* () {
@@ -559,11 +590,12 @@ describe("AnyagentAdapter over the mock binary", () => {
 // ---------------------------------------------------------------------------
 
 type WaitFor = (match: (e: ProviderRuntimeEvent) => boolean) => Effect.Effect<ProviderRuntimeEvent>;
+type Answered = { readonly request: string; readonly answer: Answer };
 
 /**
  * Runs `body` against an adapter over `anyagent serve --mock <script>.json`.
  * Every event the adapter emits is collected; `waitFor` polls them and, after
- * 5 s, dies listing what it saw. `opened` lists the options of every `open` sent.
+ * 5 s, dies listing what it saw. `opened` lists the options of every `open` sent, `answered` every answer.
  * `mcpTransports` overrides the mock's probe (it advertises none); `kind` replaces claudeAgent, `agent` the mock,
  * `launch` the instance's launch options (none by default).
  * `nativeLog` turns T3's native event log on at that path (off by default).
@@ -575,6 +607,7 @@ function run<A, E>(
     waitFor: WaitFor,
     seen: () => Seen,
     opened: () => ReadonlyArray<OpenOptions>,
+    answered: () => ReadonlyArray<Answered>,
   ) => Effect.Effect<A, E>,
   options: {
     readonly mcpTransports?: McpTransport[];
@@ -585,6 +618,7 @@ function run<A, E>(
   } = {},
 ) {
   const opens: OpenOptions[] = [];
+  const answers: Answered[] = [];
   const mock = makeAnyagentRuntimeLayer({
     bin: BIN,
     mock: NodePath.join(ANYAGENT, `packages/mock-scripts/${script}.json`),
@@ -594,7 +628,7 @@ function run<A, E>(
       AnyagentRuntime,
       Effect.map(AnyagentRuntime, ({ use }) => ({
         use: <T>(f: (runtime: Runtime) => Promise<T>) =>
-          use((runtime) => f(recordingOpens(runtime, opens))),
+          use((runtime) => f(recording(runtime, opens, answers))),
       })),
     ).pipe(Layer.provide(mock)),
     ServerConfig.layerTest(cwd, { prefix: "t3-anyagent-" }).pipe(Layer.provide(NodeServices.layer)),
@@ -649,18 +683,25 @@ function run<A, E>(
       waitFor,
       () => events,
       () => opens,
+      () => answers,
     );
   }).pipe(Effect.scoped, Effect.provide(layer));
 }
 
-/** `runtime` with every `open`'s options pushed to `opens` first. */
-function recordingOpens(runtime: Runtime, opens: OpenOptions[]): Runtime {
+/** `runtime` with every `open`'s options pushed to `opens`, and every answer its sessions send to `answers`. */
+function recording(runtime: Runtime, opens: OpenOptions[], answers: Answered[]): Runtime {
   return new Proxy(runtime, {
     get: (target, key) => {
       if (key === "open")
-        return (agent: string, opts: OpenOptions) => {
+        return async (agent: string, opts: OpenOptions) => {
           opens.push(opts);
-          return target.open(agent, opts);
+          const session = await target.open(agent, opts);
+          const answer = session.answer.bind(session);
+          session.answer = (request, reply) => {
+            answers.push({ request, answer: reply });
+            return answer(request, reply);
+          };
+          return session;
         };
       const value = Reflect.get(target, key);
       return typeof value === "function" ? value.bind(target) : value;

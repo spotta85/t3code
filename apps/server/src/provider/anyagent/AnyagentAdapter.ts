@@ -24,6 +24,7 @@ import {
   type Event,
   type McpServer,
   type PermissionMode,
+  type PermissionRequest,
   type Question,
   type QuestionAnswer,
   type Session,
@@ -109,6 +110,15 @@ export const makeAnyagentAdapter = (
         const stream = t.session.events();
         let read = yield* nextEvent(stream);
         for (; !read.done; read = yield* nextEvent(stream)) {
+          // claude asks to leave plan mode right after its plan: T3 keeps the plan and waits for "Implement plan".
+          const exit = planExitRequest(t, read.value);
+          if (exit) {
+            const choice = permissionChoice("decline", exit.options);
+            yield* Effect.ignore(
+              call(t.threadId, "answer", () => t.session.answer(exit.id, { Permission: choice })),
+            );
+            continue;
+          }
           yield* Queue.offerAll(events, onEvent(kind, t, read.value));
         }
         const current = threads.get(t.threadId);
@@ -197,6 +207,7 @@ export const makeAnyagentAdapter = (
           tools: new Set(),
           history: [],
           activeTurnId: undefined,
+          planProposed: false,
         };
         threads.set(input.threadId, thread);
         yield* Queue.offer(events, sessionStartedEvent(context(kind, thread), session.info, now));
@@ -373,6 +384,8 @@ interface Thread {
   /** T3 turn ids in start order, for readThread and rollback. */
   readonly history: TurnId[];
   activeTurnId: TurnId | undefined;
+  /** A plan arrived in the running turn; its next permission request is the agent asking to leave plan mode. */
+  planProposed: boolean;
 }
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -417,8 +430,21 @@ function onEvent(
     t.activeTurnId = turnId;
     t.history.push(turnId);
   }
-  if ("TurnEnded" in k) t.activeTurnId = undefined;
+  if ("PlanProposed" in k) t.planProposed = true;
+  if ("TurnEnded" in k) {
+    t.activeTurnId = undefined;
+    t.planProposed = false;
+  }
   return out;
+}
+
+/** The permission request that follows the turn's plan (claude's ExitPlanMode), taken once; any other event: none. */
+function planExitRequest(t: Thread, ev: Event): PermissionRequest | undefined {
+  const k = ev.kind;
+  if (!t.planProposed || typeof k !== "object" || !("RequestOpened" in k)) return undefined;
+  if (!("Permission" in k.RequestOpened)) return undefined;
+  t.planProposed = false;
+  return k.RequestOpened.Permission;
 }
 
 /** T3's id for the event's turn; a TurnStarted for a prompt binds anyagent's turn id to that prompt's T3 id. */
