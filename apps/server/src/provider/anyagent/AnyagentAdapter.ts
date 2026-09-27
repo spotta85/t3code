@@ -141,27 +141,21 @@ export const makeAnyagentAdapter = (
       );
     };
 
-    /** Sets one session option and waits until its info shows it; a rejected change never does, so fail after 10 s. */
-    const setOption = (t: Thread, id: string, value: ConfigValue) =>
-      call(t.threadId, "configure", () => t.session.configure(id, value)).pipe(
-        Effect.andThen(
-          Effect.gen(function* () {
-            while (t.session.info.configuration.options[id] !== value) {
-              yield* Effect.sleep("20 millis");
-            }
-          }),
+    /** Sets the session's `mode` and waits for it; a change the agent rejects never shows, so fail after 10 s. */
+    const setMode = (t: Thread, mode: ConfigValue) =>
+      call(t.threadId, "configure", () => t.session.configure("mode", mode)).pipe(
+        Effect.andThen(applied(t, "mode", mode)),
+        Effect.flatMap((ok) =>
+          ok
+            ? Effect.void
+            : Effect.fail(
+                new ProviderAdapterRequestError({
+                  provider: kind,
+                  method: "configure",
+                  detail: `The agent did not apply mode '${mode}'.`,
+                }),
+              ),
         ),
-        Effect.timeoutOrElse({
-          duration: "10 seconds",
-          orElse: () =>
-            Effect.fail(
-              new ProviderAdapterRequestError({
-                provider: kind,
-                method: "configure",
-                detail: `The agent did not apply ${id} '${value}'.`,
-              }),
-            ),
-        }),
       );
 
     const startSession: Adapter["startSession"] = (input) =>
@@ -242,7 +236,7 @@ export const makeAnyagentAdapter = (
         // A plan turn switches `mode` to plan; the next default turn switches it back (see defaultMode).
         const current = t.session.info.configuration.options.mode;
         const mode = plan ? "plan" : current === "plan" ? defaultMode(t) : undefined;
-        if (mode !== undefined && mode !== current) yield* setOption(t, "mode", mode);
+        if (mode !== undefined && mode !== current) yield* setMode(t, mode);
         const model = input.modelSelection?.model;
         const picks = selectedOptions(
           kind,
@@ -250,10 +244,13 @@ export const makeAnyagentAdapter = (
           openableOptions(t.session.info.details, model),
         );
         for (const [id, value] of Object.entries(picks)) {
-          if (value === t.session.info.configuration.options[id]) continue;
-          // The model goes first; its own options (effort, fast) exist once it applies, so wait when picks follow.
-          if (id === "model" && Object.keys(picks).length > 1) yield* setOption(t, id, value);
-          else yield* call(t.threadId, "configure", () => t.session.configure(id, value));
+          // After a model switch the session lists that model's options; a pick it lacks is dropped.
+          const { details: live, configuration } = t.session.info;
+          if (value === configuration.options[id]) continue;
+          if (!live.config_options.some((o) => o.id === id)) continue;
+          yield* call(t.threadId, "configure", () => t.session.configure(id, value));
+          // The model goes first: its own options (effort, fast) exist once it applies. A refused switch sends anyway.
+          if (id === "model" && Object.keys(picks).length > 1) yield* applied(t, id, value);
         }
         const attachments: string[] = [];
         for (const attachment of input.attachments ?? []) {
@@ -398,7 +395,7 @@ interface Thread {
   /** T3 turn ids in start order, for readThread and rollback. */
   readonly history: TurnId[];
   activeTurnId: TurnId | undefined;
-  /** A plan arrived in the running turn; its next permission request is the agent asking to leave plan mode. */
+  /** A plan arrived in the running turn; its next request (a permission: the agent asking to leave plan mode) clears it. */
   planProposed: boolean;
 }
 
@@ -450,6 +447,16 @@ function onEvent(
     t.planProposed = false;
   }
   return out;
+}
+
+/** Waits until the session's info shows option `id` at `value`, up to 10 s; false when it never does. */
+function applied(t: Thread, id: string, value: ConfigValue): Effect.Effect<boolean> {
+  return Effect.gen(function* () {
+    while (t.session.info.configuration.options[id] !== value) yield* Effect.sleep("20 millis");
+  }).pipe(
+    Effect.as(true),
+    Effect.timeoutOrElse({ duration: "10 seconds", orElse: () => Effect.succeed(false) }),
+  );
 }
 
 /** The mode a default turn returns to: the open-time one, or the first non-plan choice when the session opened in plan. */

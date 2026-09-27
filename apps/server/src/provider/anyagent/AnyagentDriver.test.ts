@@ -375,12 +375,20 @@ describe("AnyagentDriver over the mock binary", () => {
         },
         // No events: the pump waits on a read that never settles.
         events: () => ({ next: () => new Promise(() => {}) }),
+        // Like a real agent, a change applies a moment later; `big` brings its own `fast`.
         configure: async (id: string, value: unknown) => {
           configured.push([id, value]);
-          info = {
-            ...info,
-            configuration: { options: { ...info.configuration.options, [id]: value } },
-          };
+          // @effect-diagnostics-next-line globalTimers:off - a plain fake of the agent's delay
+          setTimeout(() => {
+            const options = { ...info.configuration.options, [id]: value };
+            const own = options.model === "big" ? [fast] : [];
+            const config_options = [{ ...model, current: options.model as string }, ...own];
+            info = {
+              ...info,
+              details: { ...info.details, config_options },
+              configuration: { options },
+            };
+          }, 50);
         },
         prompt: async () => ({ prompt_id: "p1", kind: { Queued: { position: 0 } } }),
         close: async () => {},
