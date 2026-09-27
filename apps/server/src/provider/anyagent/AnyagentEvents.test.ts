@@ -291,17 +291,29 @@ describe("toProviderRuntimeEvents", () => {
     ]);
   });
 
-  it("Diagnostic -> runtime.warning, runtime.error at level Error, nothing at level Info", () => {
-    // Info is adapter chatter (codex: "unrecognized codex frame `hook/started`", dozens per turn).
-    expect(map({ Diagnostic: { level: "Info", message: "unrecognized codex frame `x`" } })).toEqual(
-      [],
-    );
+  it("Diagnostic -> runtime.warning, or runtime.error at level Error", () => {
+    expect(
+      map({ Diagnostic: { level: "Info", message: "the provider is retrying" } }),
+    ).toMatchObject([
+      { type: "runtime.warning", payload: { message: "the provider is retrying" } },
+    ]);
     expect(map({ Diagnostic: { level: "Warning", message: "stalled" } })).toMatchObject([
       { type: "runtime.warning", payload: { message: "stalled" } },
     ]);
     expect(map({ Diagnostic: { level: "Error", message: "bad frame" } })).toMatchObject([
       { type: "runtime.error", payload: { message: "bad frame" } },
     ]);
+  });
+
+  it("an Info Diagnostic for an unmapped wire frame (a */raw_frame extension) -> nothing", () => {
+    // codex sends dozens per turn: "unrecognized codex frame `hook/started`".
+    const ev = {
+      ...event({
+        Diagnostic: { level: "Info", message: "unrecognized codex frame `hook/started`" },
+      }),
+      extensions: { "codex/raw_frame": { method: "hook/started" } },
+    };
+    expect(toProviderRuntimeEvents(context({}), ev)).toEqual([]);
   });
 
   it("TurnEnded -> turn.completed with the state its stop reason names", () => {

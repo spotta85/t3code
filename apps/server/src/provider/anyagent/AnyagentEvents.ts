@@ -88,7 +88,8 @@ const CHOICES: Record<PermissionChoice, ProviderApprovalOption> = {
  * | ContextUsage             | thread.token-usage.updated                                |
  * | ContextCompacted         | thread.state.changed (compacted)                          |
  * | PlanUsageUpdated         | account.rate-limits.updated                               |
- * | Diagnostic               | runtime.warning; runtime.error at Error; none at Info     |
+ * | Diagnostic               | runtime.warning; runtime.error at Error; none for an Info |
+ * |                          | whose extensions carry a raw frame (unmapped wire frame)  |
  * | TurnEnded                | turn.completed, state from the stop reason                |
  * | session error / end      | runtime.error + session.exited (sessionExitedEvents)      |
  */
@@ -160,7 +161,9 @@ export function toProviderRuntimeEvents(
   }
   if ("Diagnostic" in k) {
     const { level, message } = k.Diagnostic;
-    if (level === "Info") return []; // adapter chatter, e.g. codex frames anyagent does not map
+    // An unmapped wire frame ("unrecognized codex frame `hook/started`"): debug chatter, not news.
+    if (level === "Info" && Object.keys(ev.extensions).some((key) => key.endsWith("raw_frame")))
+      return [];
     const type = level === "Error" ? "runtime.error" : "runtime.warning";
     return [{ ...base, type, payload: { message } }];
   }
