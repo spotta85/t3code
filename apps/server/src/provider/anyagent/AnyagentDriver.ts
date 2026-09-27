@@ -250,7 +250,8 @@ async function probeAgent(
             ((cause as NodeJS.ErrnoException).code === "ENOENT" ? ANYAGENT_BIN_HINT : "")
           : String(cause);
     // The agent at the instance's `binaryPath` would not start: that path has no agent.
-    if (cause instanceof AnyagentError && cause.kind === "SpawnFailed")
+    const atPath = typeof ref === "object" && "path" in ref;
+    if (atPath && cause instanceof AnyagentError && cause.kind === "SpawnFailed")
       return { error, installHint: `${agent} is not installed: ${cause.message}` };
     if (!(cause instanceof AnyagentError && cause.kind === "NotInstalled")) return { error };
     const report = await use((runtime) => runtime.discover()).catch(() => undefined);

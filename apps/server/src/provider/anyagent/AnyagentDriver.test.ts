@@ -20,7 +20,7 @@ import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/unstable/http";
-import type { AgentDetails, GenerateOptions, Runtime } from "anyagent-ts";
+import { type AgentDetails, AnyagentError, type GenerateOptions, type Runtime } from "anyagent-ts";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
@@ -313,6 +313,33 @@ describe("AnyagentDriver over the mock binary", () => {
         // The mock has no plan usage: anyagent says so, and the snapshot shows it as unsupported.
         const snapshot = yield* instance.snapshot.getSnapshot;
         expect(snapshot.usageLimits?.unavailable?.reason).toBe("unsupported");
+      }),
+    );
+  });
+
+  it.live("an agent that fails to start is not installed only at a custom binaryPath", () => {
+    const spawnFailed = new AnyagentError({
+      kind: "SpawnFailed",
+      message: "could not start agent: /opt/claude: permission denied",
+    });
+    const runtime = { probe: () => Promise.reject(spawnFailed) } as unknown as Runtime;
+    const failing = Layer.succeed(AnyagentRuntime, { use: (f) => f(runtime) });
+    return withRuntimeLayer(failing, () =>
+      Effect.gen(function* () {
+        // The discovered agent is installed; it just would not start.
+        const found = yield* create(claude, "claudeAgent", yield* Scope.make());
+        expect(yield* found.snapshot.getSnapshot).toMatchObject({
+          installed: true,
+          status: "error",
+          message: expect.stringContaining("probe failed: SpawnFailed"),
+        });
+        const config = { ...claude.defaultConfig(), binaryPath: "/opt/claude" };
+        const pinned = yield* create(claude, "claude2", yield* Scope.make(), true, { config });
+        expect(yield* pinned.snapshot.getSnapshot).toMatchObject({
+          installed: false,
+          status: "error",
+          message: expect.stringContaining("is not installed"),
+        });
       }),
     );
   });
