@@ -239,7 +239,7 @@ export const makeAnyagentAdapter = (
             issue: "Plan mode is not available for this agent.",
           });
         }
-        // A plan turn switches `mode` to plan; the next default turn switches back to the open-time mode.
+        // A plan turn switches `mode` to plan; the next default turn switches it back (see defaultMode).
         const current = t.session.info.configuration.options.mode;
         const mode = plan ? "plan" : current === "plan" ? defaultMode(t) : undefined;
         if (mode !== undefined && mode !== current) yield* setOption(t, "mode", mode);
@@ -385,7 +385,7 @@ interface Thread {
   /** Unique per session: prefixes T3 turn and event ids. */
   readonly key: string;
   readonly runtimeMode: ProviderSession["runtimeMode"];
-  /** The session's `mode` right after open; a default turn after a plan turn returns to it. */
+  /** The session's `mode` right after open; a default turn after a plan turn returns to it, unless it is plan. */
   readonly openMode: ConfigValue | undefined;
   readonly cwd: string;
   readonly createdAt: string;
