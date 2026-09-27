@@ -103,7 +103,7 @@ export const makeAnyagentDriver = (
       // The newest successful probe: the adapter's capabilities and the options `open` may set.
       let latest: AgentDetails | null = null;
       const probe: Effect.Effect<AgentProbe | undefined> = enabled
-        ? Effect.promise(() => probeAgent(use, agent, launch)).pipe(
+        ? Effect.promise(() => probeAgent(use, launch)).pipe(
             Effect.tap((result) =>
               Effect.sync(() => {
                 if ("details" in result) latest = result.details;
@@ -233,7 +233,6 @@ const ANYAGENT_BIN_HINT =
 /** Probes the agent, then reads its plan usage. A failure is a result; a missing agent carries an install hint. */
 async function probeAgent(
   use: AnyagentRuntime["Service"]["use"],
-  agent: string,
   { agent: ref, options }: Launch,
 ): Promise<AgentProbe> {
   try {
@@ -250,13 +249,16 @@ async function probeAgent(
             ((cause as NodeJS.ErrnoException).code === "ENOENT" ? ANYAGENT_BIN_HINT : "")
           : String(cause);
     // The agent at the instance's `binaryPath` would not start: that path has no agent.
-    const atPath = typeof ref === "object" && "path" in ref;
-    if (atPath && cause instanceof AnyagentError && cause.kind === "SpawnFailed")
-      return { error, installHint: `${agent} is not installed: ${cause.message}` };
-    if (!(cause instanceof AnyagentError && cause.kind === "NotInstalled")) return { error };
+    if (typeof ref === "object" && "path" in ref)
+      return cause instanceof AnyagentError && cause.kind === "SpawnFailed"
+        ? { error, installHint: `${ref.id} is not installed: ${cause.message}` }
+        : { error };
+    // Only a plain id is looked up in discovery, so only it can be missing there.
+    const notInstalled = cause instanceof AnyagentError && cause.kind === "NotInstalled";
+    if (typeof ref !== "string" || !notInstalled) return { error };
     const report = await use((runtime) => runtime.discover()).catch(() => undefined);
-    const missing = report?.missing.find((m) => m.id === agent);
-    return { error, installHint: missing?.install_hint ?? `${agent} is not installed.` };
+    const missing = report?.missing.find((m) => m.id === ref);
+    return { error, installHint: missing?.install_hint ?? `${ref} is not installed.` };
   }
 }
 

@@ -170,13 +170,11 @@ export const makeAnyagentAdapter = (
         const configure = selectedOptions(kind, input.modelSelection, openableOptions(details()));
         const mcp = t3Mcp(input.threadId, details());
         const wire = native && wireLogPath(native.filePath, input.threadId);
-        const env = withDeviceShim(launch.options.env, mcp);
         const open = (token: string | undefined) =>
           call(input.threadId, "open", () =>
             use((runtime) =>
               runtime.open(launch.agent, {
-                ...launch.options,
-                ...(env ? { env } : {}),
+                ...withDeviceShim(launch.options, mcp),
                 dir: cwd,
                 permission_mode: PERMISSION_MODE[input.runtimeMode],
                 instructions: sessionInstructions(kind, mcp),
@@ -546,15 +544,16 @@ function sessionInstructions(
   return tools ? `${runtime}\n\n${tools}` : runtime;
 }
 
-/** The instance's env plus, when the thread may drive devices, the `agent-device` shim ahead of the server's PATH. */
+/** The launch options, with the `agent-device` shim ahead of the server's PATH when the thread may drive devices. */
 function withDeviceShim(
-  env: Record<string, string> | undefined,
+  options: Launch["options"],
   mcp: McpProviderSession.McpProviderSessionConfig | undefined,
-): Record<string, string> | undefined {
-  if (!mcp?.agentDeviceEnvironment) return env;
+): Launch["options"] {
+  if (!mcp?.agentDeviceEnvironment) return options;
   // Every value is a string: the shim sets PATH, the rest come from `env` and the shim's own map.
-  const base = { PATH: process.env.PATH, ...env };
-  return McpProviderSession.withAgentDeviceEnvironment(base, mcp) as Record<string, string>;
+  const base = { PATH: process.env.PATH, ...options.env };
+  const env = McpProviderSession.withAgentDeviceEnvironment(base, mcp) as Record<string, string>;
+  return { ...options, env };
 }
 
 /** The file anyagent records a thread's raw wire to: the log store's own file for the thread, as `.wire`. */
