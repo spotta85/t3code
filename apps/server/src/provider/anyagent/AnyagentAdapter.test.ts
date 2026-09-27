@@ -362,19 +362,59 @@ describe("AnyagentAdapter over the mock binary", () => {
   );
 
   it.live("an exit-plan request with no decline choice is shown to the user instead", () =>
-    run(allowOnlyPlanExit(), (adapter, waitFor, _seen, _opened, answered) =>
-      Effect.gen(function* () {
-        yield* adapter.startSession({ threadId: A, cwd, runtimeMode: "approval-required" });
-        const plan = yield* adapter.sendTurn({
-          threadId: A,
-          input: "plan",
-          interactionMode: "plan",
-        });
-        yield* waitFor((e) => e.type === "request.opened" && e.turnId === plan.turnId);
-        yield* adapter.respondToRequest(A, ApprovalRequestId.make("exit-1"), "accept");
-        yield* waitFor((e) => e.type === "turn.completed" && e.turnId === plan.turnId);
-        expect(answered()).toEqual([{ request: "exit-1", answer: { Permission: "AllowOnce" } }]);
+    run(
+      planExitVariant("allow-once", (turn) => {
+        (turn[1] as Obj).Emit.RequestOpened.Permission.options = ["AllowOnce"];
       }),
+      (adapter, waitFor, _seen, _opened, answered) =>
+        Effect.gen(function* () {
+          yield* adapter.startSession({ threadId: A, cwd, runtimeMode: "approval-required" });
+          const plan = yield* adapter.sendTurn({
+            threadId: A,
+            input: "plan",
+            interactionMode: "plan",
+          });
+          yield* waitFor((e) => e.type === "request.opened" && e.turnId === plan.turnId);
+          yield* adapter.respondToRequest(A, ApprovalRequestId.make("exit-1"), "accept");
+          yield* waitFor((e) => e.type === "turn.completed" && e.turnId === plan.turnId);
+          expect(answered()).toEqual([{ request: "exit-1", answer: { Permission: "AllowOnce" } }]);
+        }),
+    ),
+  );
+
+  it.live("a question right after a plan is the plan's request: a later permission is shown", () =>
+    run(
+      planExitVariant("question-first", (turn) => {
+        const question = {
+          id: "q1",
+          text: "Which file?",
+          header: null,
+          choices: [],
+          multi_select: false,
+          allows_free_text: true,
+        };
+        turn.splice(
+          1,
+          0,
+          { Emit: { RequestOpened: { Question: { id: "q1", questions: [question] } } } },
+          "AwaitAnswer",
+        );
+      }),
+      (adapter, waitFor, _seen, _opened, answered) =>
+        Effect.gen(function* () {
+          yield* adapter.startSession({ threadId: A, cwd, runtimeMode: "approval-required" });
+          const plan = yield* adapter.sendTurn({
+            threadId: A,
+            input: "plan",
+            interactionMode: "plan",
+          });
+          yield* waitFor((e) => e.type === "user-input.requested" && e.turnId === plan.turnId);
+          yield* adapter.respondToUserInput(A, ApprovalRequestId.make("q1"), { q1: "README.md" });
+          yield* waitFor((e) => e.type === "request.opened" && e.turnId === plan.turnId);
+          yield* adapter.respondToRequest(A, ApprovalRequestId.make("exit-1"), "accept");
+          yield* waitFor((e) => e.type === "turn.completed" && e.turnId === plan.turnId);
+          expect(answered().map((a) => a.request)).toEqual(["q1", "exit-1"]);
+        }),
     ),
   );
 
@@ -631,6 +671,7 @@ describe("AnyagentAdapter over the mock binary", () => {
 
 type WaitFor = (match: (e: ProviderRuntimeEvent) => boolean) => Effect.Effect<ProviderRuntimeEvent>;
 type Answered = { readonly request: string; readonly answer: Answer };
+type Obj = Record<string, any>;
 
 /**
  * Runs `body` against an adapter over `anyagent serve --mock <script>.json` (or a script file's path).
@@ -730,13 +771,13 @@ function run<A, E>(
   }).pipe(Effect.scoped, Effect.provide(layer));
 }
 
-/** plan-exit.json with an exit-plan request that offers only AllowOnce, written to one fixed temp file. */
-function allowOnlyPlanExit(): string {
+/** plan-exit.json with its plan turn's steps changed by `edit`, written to one fixed temp file per `name`. */
+function planExitVariant(name: string, edit: (turn: Array<Obj | string>) => void): string {
   const script = JSON.parse(
     NodeFS.readFileSync(NodePath.join(ANYAGENT, "packages/mock-scripts/plan-exit.json"), "utf8"),
   );
-  script.turns[0][1].Emit.RequestOpened.Permission.options = ["AllowOnce"];
-  const file = NodePath.join(NodeOS.tmpdir(), "t3-anyagent-plan-exit-allow-once.json");
+  edit(script.turns[0]);
+  const file = NodePath.join(NodeOS.tmpdir(), `t3-anyagent-plan-exit-${name}.json`);
   NodeFS.writeFileSync(file, JSON.stringify(script));
   return file;
 }

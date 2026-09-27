@@ -455,13 +455,15 @@ function defaultMode(t: Thread): ConfigValue | undefined {
   return mode.kind.Select.choices.find((c) => c.value !== "plan")?.value;
 }
 
-/** The permission request that follows the turn's plan (claude's ExitPlanMode), taken once; any other event: none. */
+/**
+ * The permission request that follows the turn's plan (claude's ExitPlanMode). Like anyagent's engine, the first
+ * request after a plan is the plan's own: it clears the flag, and only a permission is returned.
+ */
 function planExitRequest(t: Thread, ev: Event): PermissionRequest | undefined {
   const k = ev.kind;
   if (!t.planProposed || typeof k !== "object" || !("RequestOpened" in k)) return undefined;
-  if (!("Permission" in k.RequestOpened)) return undefined;
   t.planProposed = false;
-  return k.RequestOpened.Permission;
+  return "Permission" in k.RequestOpened ? k.RequestOpened.Permission : undefined;
 }
 
 /** T3's id for the event's turn; a TurnStarted for a prompt binds anyagent's turn id to that prompt's T3 id. */
