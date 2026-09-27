@@ -361,6 +361,7 @@ describe("toProviderRuntimeEvents", () => {
           resets_at: { secs_since_epoch: 1_700_000_000, nanos_since_epoch: 5_000_000 },
         },
         { label: "Week", used_percent: 40 },
+        { label: "∞", used_percent: 5 },
       ],
       fetched_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
     };
@@ -378,6 +379,8 @@ describe("toProviderRuntimeEvents", () => {
                 resetsAt: AT,
               },
               { id: "seven_day", kind: "weekly", label: "Week", usedPercent: 40 },
+              // No letter or digit to make an id from: the label is the id.
+              { id: "∞", kind: "other", label: "∞", usedPercent: 5 },
             ],
           },
         },

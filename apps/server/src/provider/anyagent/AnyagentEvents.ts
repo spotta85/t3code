@@ -519,13 +519,13 @@ const WINDOWS: Record<string, readonly [string, ServerProviderUsageWindow["kind"
   Month: ["monthly", "monthly"],
 };
 
-/** One plan-quota window in T3's usage-limit shape; another label ("Week (Opus)") gets an id made from it. */
+/** One plan-quota window in T3's usage-limit shape; another label ("Week (Opus)") gets an id made from it, or itself. */
 function usageWindow(w: PlanUsage["windows"][number]): ServerProviderUsageWindow {
   const slug = w.label
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "");
-  const [id, kind] = WINDOWS[w.label] ?? [slug, "other"];
+  const [id, kind] = WINDOWS[w.label] ?? [slug || w.label, "other"];
   return {
     id,
     kind,
