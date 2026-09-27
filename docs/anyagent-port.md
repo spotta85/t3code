@@ -60,7 +60,7 @@ provider on for its run. The last run is under "Live check" below.
 | Session instructions                               | T3 added runtime info, PR linking and codex's mode prompt to every session                                                                                                                       | Runtime info and PR linking; codex also gets the browser and device tool guide. Codex uses its own plan-mode prompt                                                                                                                        |
 | Antigravity                                        | T3 ran its managed install                                                                                                                                                                       | The managed install still downloads but is unused: anyagent runs its own `agy`                                                                                                                                                             |
 | T3 MCP tools (browser, devices, PR linking)        | Every agent                                                                                                                                                                                      | Same: all six take T3's server                                                                                                                                                                                                             |
-| Per-turn token usage                               | claude, codex, opencode                                                                                                                                                                          | Same; cursor, grok and antigravity (its ACP server) report none                                                                                                                                                                            |
+| Per-turn token usage                               | claude, codex, opencode                                                                                                                                                                          | Same, plus antigravity's native adapter; cursor, grok and antigravity's ACP server report none                                                                                                                                             |
 | Tool denied (a rule refused a tool without asking) | claude                                                                                                                                                                                           | Same                                                                                                                                                                                                                                       |
 | cursor in approval-required threads                | cursor's read-only `ask` mode                                                                                                                                                                    | cursor writes files without asking: its ACP agent asks permission for commands, not for edits                                                                                                                                              |
 
@@ -105,28 +105,41 @@ environment variable, not its command line).
 
 ## Live check (2026-09-27)
 
-All six kinds were installed and logged in. `--` means PASS; the other cells give the reason.
+All six kinds were installed and logged in. PASS unless the cell says otherwise; "quota" means
+the agent's account was out, so the row is not proven there.
 
-| Row                              | claude | codex                                | cursor                   | grok               | opencode           | antigravity        |
-| -------------------------------- | ------ | ------------------------------------ | ------------------------ | ------------------ | ------------------ | ------------------ |
-| discover, generate, usage-limits | --     | --                                   | --                       | --                 | --                 | --                 |
-| open+stream, tool+diff           | --     | --                                   | --¹                      | --¹                | --                 | --                 |
-| permission, deny                 | --     | --                                   | SKIP: edits run unasked² | --¹                | --                 | --                 |
-| question, cancel                 | --     | --                                   | SKIP: quota¹             | --¹                | --                 | --                 |
-| subagent                         | --     | SKIP: claude only                    | SKIP: claude only        | SKIP: claude only  | SKIP: claude only  | SKIP: claude only  |
-| model-switch                     | --     | --                                   | --                       | SKIP: one model    | --                 | --                 |
-| resume                           | --     | --                                   | SKIP: quota¹             | --                 | --                 | --                 |
-| rollback                         | --     | --                                   | SKIP: no rollback        | SKIP: no rollback  | --                 | SKIP: no rollback  |
-| usage (per-turn tokens)          | --     | --                                   | SKIP: ACP, none          | SKIP: ACP, none    | --                 | SKIP: ACP, none    |
-| instructions                     | --     | --                                   | --                       | SKIP: quota¹       | --                 | --                 |
-| plan                             | --     | --                                   | SKIP: quota¹             | SKIP: no plan mode | SKIP: no plan mode | SKIP: no plan mode |
-| accept-edits                     | --     | SKIP: sandbox runs the shell unasked | SKIP: quota¹             | SKIP: quota¹       | --                 | --                 |
-| mcp-tool                         | --     | --                                   | SKIP: quota¹             | SKIP: quota¹       | --                 | --                 |
+| Row                       | claude | codex                                | cursor                 | grok               | opencode           | antigravity        |
+| ------------------------- | ------ | ------------------------------------ | ---------------------- | ------------------ | ------------------ | ------------------ |
+| discover, usage-limits    | PASS   | PASS                                 | PASS                   | PASS               | PASS               | PASS               |
+| open+stream               | PASS   | PASS                                 | PASS¹                  | PASS¹              | PASS               | PASS               |
+| tool+diff                 | PASS   | PASS                                 | PASS¹                  | PASS               | PASS               | PASS               |
+| permission                | PASS   | PASS                                 | SKIP: edits unasked¹ ³ | PASS               | FAIL (agent)⁴      | PASS               |
+| deny                      | PASS   | PASS                                 | SKIP: edits unasked¹ ³ | PASS¹              | PASS               | PASS               |
+| question                  | PASS   | PASS                                 | quota                  | PASS¹              | PASS               | PASS               |
+| subagent                  | PASS   | SKIP: claude only                    | SKIP: claude only      | SKIP: claude only  | SKIP: claude only  | SKIP: claude only  |
+| model-switch              | PASS   | PASS                                 | PASS²                  | SKIP: one model    | PASS               | PASS               |
+| cancel                    | PASS   | PASS                                 | quota                  | PASS¹              | PASS               | PASS               |
+| resume                    | PASS   | PASS                                 | quota                  | PASS               | PASS               | PASS               |
+| rollback                  | PASS   | PASS                                 | SKIP: no rollback      | SKIP: no rollback  | PASS               | SKIP: no rollback  |
+| usage (per-turn tokens)   | PASS   | PASS                                 | SKIP: ACP              | quota              | PASS               | SKIP: ACP          |
+| generate (T3's own title) | PASS   | PASS                                 | quota                  | quota              | PASS               | PASS               |
+| instructions              | PASS   | PASS                                 | PASS²                  | quota              | PASS               | PASS               |
+| plan                      | PASS   | PASS                                 | quota                  | SKIP: no plan mode | SKIP: no plan mode | SKIP: no plan mode |
+| accept-edits              | PASS   | SKIP: sandbox runs the shell unasked | quota                  | quota              | PASS               | PASS               |
+| mcp-tool                  | PASS   | PASS                                 | quota                  | quota              | PASS               | PASS               |
 
-¹ cursor's free plan ("Upgrade your plan to continue") and grok's free usage (429,
-`subscription:free-usage-exhausted`) ran out during the run; the `--` cells passed before that.
-² cursor's agent mode edits without an ACP permission request, so Ask mode cannot stop it.
-After this round's fixes no row fails on T3 or anyagent. `usage-limits` shows windows on claude and codex (codex also
-`resetCredits`) and `unsupported` on the others. `instructions` found T3's text in claude's
-`initialize` (`appendSystemPrompt`), codex's `thread/start` (`developerInstructions`), opencode's
-prompt `system`, and the first prompt of the ACP agents.
+¹ Passed (or, for the SKIPs, was seen on the wire) in the first run, before the account's quota
+ran out: cursor's free plan ("Upgrade your plan to continue"), grok's free usage (429,
+`subscription:free-usage-exhausted`, a rolling 24-hour window).
+² Ran with cursor's quota already out; the check reads the session's config event or the outgoing
+wire, not the reply.
+³ cursor's agent mode edits with no ACP `session/request_permission`, so Ask mode cannot stop it.
+⁴ opencode's free model answered "hello" to the queued "reply with the single word queued"; the
+wire shows the prompt reached opencode. It passed in the run before.
+
+"SKIP: ACP" is decided from the wire: the session spoke ACP (`session/prompt`) and its turn carried
+no token counts; antigravity here is its ACP server (its native adapter over `agy` reports them).
+`usage-limits` shows windows on claude and codex (codex also `resetCredits`) and `unsupported` on
+the others. `instructions` found T3's text in claude's `initialize` (`appendSystemPrompt`),
+codex's `thread/start` (`developerInstructions`), opencode's prompt `system`, and the first prompt
+of the ACP agents.
