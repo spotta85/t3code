@@ -285,20 +285,16 @@ export function permissionChoice(
 export function planUsageLimits(plan: PlanUsage): ServerProviderUsageLimits {
   const credits = plan.reset_credits;
   const expires = credits?.next_expires_at;
-  return {
-    ...makeUsageLimits({
-      checkedAt: isoTime(plan.fetched_at),
-      windows: plan.windows.map(usageWindow),
-    }),
-    ...(credits
-      ? {
-          resetCredits: {
-            availableCount: credits.available,
-            ...(expires ? { nextExpiresAt: isoTime(expires) } : {}),
-          },
-        }
-      : {}),
+  const limits = makeUsageLimits({
+    checkedAt: isoTime(plan.fetched_at),
+    windows: plan.windows.map(usageWindow),
+  });
+  if (!credits) return limits;
+  const resetCredits = {
+    availableCount: credits.available,
+    ...(expires ? { nextExpiresAt: isoTime(expires) } : {}),
   };
+  return { ...limits, resetCredits };
 }
 
 // ---------------------------------------------------------------------------

@@ -513,13 +513,9 @@ function withDeviceShim(
   mcp: McpProviderSession.McpProviderSessionConfig | undefined,
 ): Record<string, string> | undefined {
   if (!mcp?.agentDeviceEnvironment) return env;
-  const merged = McpProviderSession.withAgentDeviceEnvironment(
-    { PATH: process.env.PATH, ...env },
-    mcp,
-  );
-  return Object.fromEntries(
-    Object.entries(merged).filter((entry): entry is [string, string] => entry[1] !== undefined),
-  );
+  // Every value is a string: the shim sets PATH, the rest come from `env` and the shim's own map.
+  const base = { PATH: process.env.PATH, ...env };
+  return McpProviderSession.withAgentDeviceEnvironment(base, mcp) as Record<string, string>;
 }
 
 /** The file anyagent records a thread's raw wire to: beside the native log, named like its per-thread files. */
