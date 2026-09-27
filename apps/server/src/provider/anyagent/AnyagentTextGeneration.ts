@@ -30,6 +30,7 @@ import {
   sanitizeCommitSubject,
   sanitizePrTitle,
   sanitizeThreadTitle,
+  toJsonSchemaObject,
 } from "../../textGeneration/TextGenerationUtils.ts";
 import { AnyagentRuntime, type Launch } from "./AnyagentRuntime.ts";
 import { selectedOptions } from "./AnyagentSnapshot.ts";
@@ -54,15 +55,21 @@ export const makeAnyagentTextGeneration = (
     const { attachmentsDir } = yield* ServerConfig;
     const fileSystem = yield* FileSystem.FileSystem;
 
-    /** One reply for `prompt` in `cwd`, with the images among `attachments`, decoded with `schema`; every failure is a TextGenerationError. */
+    /**
+     * One reply for `prompt` in `cwd`, with the images among `attachments`, decoded with `schema`; every failure is a
+     * TextGenerationError. An agent that takes an output schema replies with the JSON alone; others bury it in text.
+     */
     const runJson = <S extends Schema.Top>(
       operation: Operation,
       cwd: string,
       modelSelection: ModelSelection,
       { prompt, outputSchema }: { prompt: string; outputSchema: S },
       attachments: ReadonlyArray<ChatAttachment> = [],
-    ): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
-      Effect.tryPromise({
+    ): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> => {
+      const schema = details()?.capabilities.features.includes("OutputSchema")
+        ? (toJsonSchemaObject(outputSchema) as Record<string, unknown>)
+        : undefined;
+      return Effect.tryPromise({
         try: () =>
           use((runtime) =>
             runtime.generate(
@@ -72,6 +79,7 @@ export const makeAnyagentTextGeneration = (
                 dir: cwd,
                 configure: selectedOptions(kind, modelSelection, details()),
                 attachments: imagePaths(attachmentsDir, attachments),
+                ...(schema ? { output_schema: schema } : {}),
               },
               prompt,
             ),
@@ -84,12 +92,15 @@ export const makeAnyagentTextGeneration = (
           orElse: () => Effect.fail(failure(operation, "anyagent generate timed out.")),
         }),
         Effect.flatMap((text) =>
-          Schema.decodeEffect(Schema.fromJsonString(outputSchema))(extractJsonObject(text.trim())),
+          Schema.decodeEffect(Schema.fromJsonString(outputSchema))(
+            schema ? text : extractJsonObject(text.trim()),
+          ),
         ),
         Effect.catchTag("SchemaError", (cause) =>
           Effect.fail(failure(operation, "The agent returned invalid structured output.", cause)),
         ),
       );
+    };
 
     return {
       generateCommitMessage: (input) =>

@@ -468,6 +468,62 @@ describe("AnyagentDriver over the mock binary", () => {
     ),
   );
 
+  it.live("text generation sends a strict output schema where the agent takes one", () => {
+    const sent: GenerateOptions[] = [];
+    // One reply that decodes for every operation's schema.
+    const reply = { subject: "Fix login", body: "b", branch: "fix-login", title: "Fix login" };
+    let features: AgentDetails["capabilities"]["features"] = ["OutputSchema"];
+    const runtime = {
+      probe: async () => ({ ...details(), capabilities: { features, mcp_transports: [] } }),
+      planUsage: async () => Promise.reject(new Error("no plan usage")),
+      generate: async (_agent: string, opts: GenerateOptions) => {
+        sent.push(opts);
+        const json = JSON.stringify(reply);
+        return opts.output_schema ? json : `Here you go:\n${json}\nDone.`;
+      },
+    } as unknown as Runtime;
+    const fake = Layer.succeed(AnyagentRuntime, { use: (f) => f(runtime) });
+    return withRuntimeLayer(fake, () =>
+      Effect.gen(function* () {
+        const instance = yield* create(codex, "codex", yield* Scope.make());
+        const gen = instance.textGeneration;
+        const modelSelection = { instanceId: instance.instanceId, model: "gpt-5.5" };
+        const common = { cwd, modelSelection };
+        yield* gen.generateThreadTitle({ ...common, message: "the login page crashes" });
+        yield* gen.generateBranchName({ ...common, message: "the login page crashes" });
+        const commit = { ...common, branch: null, stagedSummary: "M a", stagedPatch: "+a" };
+        yield* gen.generateCommitMessage({ ...commit, includeBranch: true });
+        yield* gen.generatePrContent({
+          ...common,
+          baseBranch: "main",
+          headBranch: "fix-login",
+          commitSummary: "Fix login",
+          diffSummary: "M a",
+          diffPatch: "+a",
+        });
+        // codex's rule: every object closed, every property required.
+        for (const opts of sent) expect(strictObjects(opts.output_schema)).toBe(true);
+        expect(sent.map((o) => Object.keys(o.output_schema?.properties ?? {}))).toEqual([
+          ["title", "needsRefinement"],
+          ["branch"],
+          ["subject", "body", "branch"],
+          ["title", "body"],
+        ]);
+
+        // Without the capability: no schema, and the JSON is dug out of the reply's text.
+        features = [];
+        yield* instance.snapshot.refresh;
+        yield* instance.snapshot.refresh;
+        const title = yield* gen.generateThreadTitle({
+          ...common,
+          message: "the login page crashes",
+        });
+        expect(sent.at(-1)?.output_schema).toBeUndefined();
+        expect(title).toEqual({ title: "Fix login" });
+      }),
+    );
+  });
+
   it.live("title and branch generation show the agent the image attachments' files", () => {
     const sent: GenerateOptions[] = [];
     const details: AgentDetails = {
@@ -517,6 +573,19 @@ describe("AnyagentDriver over the mock binary", () => {
 // ---------------------------------------------------------------------------
 
 type Obj = Record<string, unknown>;
+
+/** True when every object in a JSON schema is closed and requires all its properties. */
+function strictObjects(schema: unknown): boolean {
+  if (typeof schema !== "object" || schema === null) return true;
+  const node = schema as Obj;
+  const keys = Object.keys((node.properties as Obj | undefined) ?? {});
+  if (node.type === "object") {
+    const required = (node.required as string[] | undefined) ?? [];
+    if (node.additionalProperties !== false || keys.some((k) => !required.includes(k)))
+      return false;
+  }
+  return Object.values(node).every(strictObjects);
+}
 
 /** Probe details with no options and no commands. */
 function details(): AgentDetails {

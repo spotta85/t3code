@@ -10,12 +10,12 @@ ProviderService ─► ProviderAdapterShape ─► AnyagentAdapter ─► anyage
                                                          claude · codex · cursor · grok · opencode · agy
 ```
 
-| Before                                                                                           | Now                                                                       |
-| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
-| `provider/Drivers/<Agent>Driver.ts`, `Layers/<Agent>Adapter.ts`, `Layers/<Agent>Provider.ts`     | `provider/anyagent/` (driver, adapter, snapshot, text generation, events) |
-| `provider/acp/`, `packages/effect-acp`, `packages/effect-codex-app-server`, `opencodeRuntime.ts` | inside anyagent                                                           |
-| `textGeneration/<Agent>TextGeneration.ts`                                                        | `anyagent/AnyagentTextGeneration.ts` (one-shot `generate`)                |
-| per-driver update rules                                                                          | `anyagent/maintenance.ts`                                                 |
+| Before                                                                                           | Now                                                                                                         |
+| ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `provider/Drivers/<Agent>Driver.ts`, `Layers/<Agent>Adapter.ts`, `Layers/<Agent>Provider.ts`     | `provider/anyagent/` (driver, adapter, snapshot, text generation, events)                                   |
+| `provider/acp/`, `packages/effect-acp`, `packages/effect-codex-app-server`, `opencodeRuntime.ts` | inside anyagent                                                                                             |
+| `textGeneration/<Agent>TextGeneration.ts`                                                        | `anyagent/AnyagentTextGeneration.ts` (one-shot `generate`, with an output schema where the agent takes one) |
+| per-driver update rules                                                                          | `anyagent/maintenance.ts`                                                                                   |
 
 Features anyagent does not have yet are listed in anyagent's `docs/ports/t3-code/gaps.md`.
 
