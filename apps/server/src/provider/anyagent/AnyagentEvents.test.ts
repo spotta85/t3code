@@ -197,6 +197,44 @@ describe("toProviderRuntimeEvents", () => {
     ]);
   });
 
+  it("ToolUpdated Subagent with subagent info -> role and model on its rows, task.progress while it runs", () => {
+    const sub = (status: "Running" | "Completed", subagent: object) => ({
+      ...tool(status),
+      kind: "Subagent" as const,
+      title: "list the files",
+      input: "None" as const,
+      subagent,
+    });
+    const claude = { role: "Explore", model: "haiku", summary: " Reading src ", tokens: 1200 };
+    const who = { taskId: "tool-1", role: "Explore", model: "haiku" };
+    expect(map({ ToolUpdated: sub("Running", claude) })).toMatchObject([
+      { type: "item.started" },
+      { eventId: "k:7:1", type: "task.started", payload: who },
+      {
+        eventId: "k:7:4",
+        type: "task.progress",
+        payload: {
+          ...who,
+          description: "list the files",
+          summary: "Reading src",
+          typedUsage: { totalTokens: 1200 },
+        },
+      },
+    ]);
+    // codex reports tokens only; the finished task keeps the last count.
+    const seen = { tools: new Set(["tool-1"]) };
+    expect(map({ ToolUpdated: sub("Running", { tokens: 40 }) }, seen)).toMatchObject([
+      { type: "item.updated" },
+      { type: "task.progress", payload: { typedUsage: { totalTokens: 40 } } },
+    ]);
+    expect(map({ ToolUpdated: sub("Completed", { tokens: 90 }) }, seen)).toMatchObject([
+      { type: "item.completed" },
+      { type: "task.completed", payload: { status: "completed", typedUsage: { totalTokens: 90 } } },
+    ]);
+    // No summary and no tokens: no progress row.
+    expect(map({ ToolUpdated: sub("Running", { role: "Explore" }) }, seen)).toHaveLength(1);
+  });
+
   it("ToolUpdated Denied -> item.completed declined, plus tool.denied with its output as reason", () => {
     const denied = {
       ...tool("Running"),

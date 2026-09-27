@@ -107,6 +107,28 @@ describe("AnyagentAdapter over the mock binary", () => {
     ),
   );
 
+  it.live("a subagent's info reaches its task rows; its tools' progress names the task", () =>
+    run("subagent", (adapter, waitFor, seen) =>
+      Effect.gen(function* () {
+        yield* adapter.startSession({ threadId: A, cwd, runtimeMode: "full-access" });
+        const { turnId } = yield* adapter.sendTurn({ threadId: A, input: "hi" });
+        yield* waitFor((e) => e.type === "turn.completed" && e.turnId === turnId);
+        const who = { taskId: "task-1", role: "Explore", model: "haiku" };
+        expect(
+          seen().filter((e) => e.type.startsWith("task.") || e.type === "tool.progress"),
+        ).toMatchObject([
+          { type: "task.started", payload: who },
+          { type: "task.progress", payload: { ...who, summary: "Reading src" } },
+          { type: "tool.progress", payload: { toolUseId: "tool-9", taskId: "task-1" } },
+          {
+            type: "task.completed",
+            payload: { ...who, status: "completed", typedUsage: { totalTokens: 2400 } },
+          },
+        ]);
+      }),
+    ),
+  );
+
   it.live("interrupt ends the turn cancelled and resolves the open request", () =>
     run("turn", (adapter, waitFor) =>
       Effect.gen(function* () {

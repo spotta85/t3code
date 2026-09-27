@@ -86,7 +86,9 @@ const CHOICES: Record<PermissionChoice, ProviderApprovalOption> = {
  * | subagent (parent_tool_id)|                                                           |
  * | UserMessage              | none: T3 records its own user messages                    |
  * | ToolUpdated              | item.started (first seen), item.updated, item.completed (done) |
- * | ToolUpdated Subagent     | also task.started (first seen), task.completed (done)     |
+ * | ToolUpdated Subagent     | also task.started (first seen), task.progress (running,   |
+ * |                          | with a summary or tokens), task.completed (done); role,   |
+ * |                          | model, summary and tokens from its `subagent` info        |
  * | ToolUpdated Denied       | also tool.denied, the reason from its output              |
  * | ToolOutputDelta          | content.delta (command_output)                            |
  * | ToolProgress             | tool.progress; in a subagent, taskId is its tool          |
@@ -108,7 +110,6 @@ const CHOICES: Record<PermissionChoice, ProviderApprovalOption> = {
  * |                          | from its usage (claude, codex, opencode, pi, native agy;  |
  * |                          | not ACP agents, antigravity's ACP server included)        |
  * | session error / end      | runtime.error + session.exited (sessionExitedEvents)      |
- * | (no source in anyagent)  | task.progress: gaps.md row                                |
  */
 export function toProviderRuntimeEvents(
   ctx: EventContext,
@@ -382,14 +383,27 @@ function toolEvent(
   };
 }
 
-/** A subagent tool's T3 task: started when first seen, completed once it finishes (ids after the item's). */
+/**
+ * A subagent tool's T3 task: started when first seen, progress while it runs with a summary or tokens, completed once
+ * it finishes (ids after the item's). Role and model ride every row; tokens are the agent's own count, shown as is.
+ */
 function taskEvents(base: Base, tool: ToolUpdate, seen: boolean): ProviderRuntimeEvent[] {
   const title = tool.title.trim();
+  const info = tool.subagent;
+  const role = info?.role?.trim();
+  const model = info?.model?.trim();
+  const summary = info?.summary?.trim();
   const task = {
     taskId: RuntimeTaskId.make(tool.id),
     taskType: "subagent",
     toolUseId: tool.id,
     ...(title ? { title } : {}),
+    ...(role ? { role } : {}),
+    ...(model ? { model } : {}),
+  };
+  const progress = {
+    ...(summary ? { summary } : {}),
+    ...(info?.tokens != null ? { typedUsage: { totalTokens: info.tokens } } : {}),
   };
   const out: ProviderRuntimeEvent[] = [];
   if (!seen) {
@@ -398,7 +412,14 @@ function taskEvents(base: Base, tool: ToolUpdate, seen: boolean): ProviderRuntim
   }
   if (tool.status !== "Pending" && tool.status !== "Running") {
     const status = TASK_STATUS[tool.status];
-    out.push({ ...extra(base, 2), type: "task.completed", payload: { ...task, status } });
+    out.push({
+      ...extra(base, 2),
+      type: "task.completed",
+      payload: { ...task, status, ...progress },
+    });
+  } else if (Object.keys(progress).length > 0) {
+    const payload = { ...task, description: title || role || "Subagent", ...progress };
+    out.push({ ...extra(base, 4), type: "task.progress", payload });
   }
   return out;
 }
