@@ -48,7 +48,7 @@ const MARKER = "subagent-marker.txt";
 const WRITE = `Create a file named ${FILE} containing exactly the word hello. Use your file tools. Do not verify afterwards.`;
 const PONG = "Reply with the single word pong. No tools.";
 const SHELL =
-  "Run exactly this shell command with your shell tool: echo accept-edits-check. Then reply with its output. No other tools.";
+  "Run exactly this shell command with your shell tool: touch accept-edits-check.txt. Then reply with the word done. No other tools.";
 const MCP =
   "Call the list_thread_pull_requests tool of the t3-code MCP server once, with no arguments, then reply with just the word done. No other tools.";
 const PLAN =
