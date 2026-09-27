@@ -54,8 +54,6 @@ const MCP =
 const PLAN =
   "Plan how to add a README to this project. Do not write files. Do not ask me any questions; make reasonable assumptions.";
 const COUNT = "Count from 1 to 2000, one number per line. No other text. No tools.";
-/** Why cursor's Ask-mode rows are skipped (the wire shows its edits run with no session/request_permission). */
-const CURSOR_EDITS = "cursor's agent mode applies edits without asking (no ACP permission request)";
 
 /** The rows in run order: id, timeout, what passing means (printed by --dry-run), and the check. */
 const ROWS: Row[] = [
@@ -297,7 +295,10 @@ async function toolDiff(ctx: Ctx): Promise<string> {
   const tools = activities(t, turn.from).filter((a) => a.kind.startsWith("tool."));
   // T3 cuts an activity's detail at 180 chars, so a long path may lose the file name; T3's tool item keeps it.
   const items = (await flushedProviderEvents(ctx, t)).filter((e) => e.type === "item.completed");
-  const naming = [...tools, ...items].filter((a) => JSON.stringify(a.payload).includes(FILE));
+  const naming = [
+    ...tools.filter((a) => JSON.stringify(a.payload).includes(FILE)),
+    ...items.filter((e) => String(e.payload.detail ?? e.payload.title ?? "").includes(FILE)),
+  ];
   const diffs = t.events.items
     .slice(turn.from)
     .filter((e) => e.type === "thread.turn-diff-completed")
@@ -314,10 +315,9 @@ async function toolDiff(ctx: Ctx): Promise<string> {
 
 /** Ask mode: the write asks, a second turn queues behind it; approve, both turns complete, the file lands. */
 async function permission(ctx: Ctx): Promise<string> {
-  if (ctx.agent === "cursor") throw new Skip(CURSOR_EDITS);
   const t = await openThread(ctx, "permission", { runtimeMode: "approval-required" });
   const from = await sendTurn(ctx, t, WRITE);
-  const asked = await waitActivity(ctx, t, from, "approval.requested", 120_000);
+  const asked = await waitApproval(ctx, t, from);
   await sendTurn(ctx, t, "Now reply with the single word queued. No tools.");
   const end = await settle(ctx, t, from, {
     decision: "accept",
@@ -333,10 +333,9 @@ async function permission(ctx: Ctx): Promise<string> {
 
 /** Ask mode: every approval is declined; the turn completes and no file is written. */
 async function deny(ctx: Ctx): Promise<string> {
-  if (ctx.agent === "cursor") throw new Skip(CURSOR_EDITS);
   const t = await openThread(ctx, "deny", { runtimeMode: "approval-required" });
   const from = await sendTurn(ctx, t, WRITE);
-  await waitActivity(ctx, t, from, "approval.requested", 120_000);
+  await waitApproval(ctx, t, from);
   const end = await settle(ctx, t, from, { decision: "decline" });
   expect(end.status === "ready", `turn ended ${end.status}: ${end.lastError}`);
   expect(!NodeFS.existsSync(NodePath.join(t.dir, FILE)), `${FILE} exists after deny`);
@@ -541,14 +540,14 @@ async function rollback(ctx: Ctx): Promise<string> {
 
 /** After a turn, a context-window.updated activity must carry non-zero input tokens. */
 async function usage(ctx: Ctx): Promise<string> {
-  if (["cursor", "grok", "antigravity"].includes(ctx.agent))
-    throw new Skip("an ACP agent: its wire reports no per-turn token counts");
   const t = await openThread(ctx, "usage");
   const turn = await runTurn(ctx, t, PONG);
   expect(turn.status === "ready", `turn ended ${turn.status}: ${turn.lastError}`);
   if (!ctx.server.baseDir) return "not checked (--url: no provider log)";
   const usage = (await flushedProviderEvents(ctx, t)).find((e) => e.type === "turn.completed")
     ?.payload.tokenUsage;
+  const acp = wireFrames(ctx, t).some((f) => f.frame.method === "session/prompt");
+  if (!usage && acp) throw new Skip("an ACP session: its wire carries no per-turn token counts");
   expect(
     usage?.inputTokens > 0 && usage?.outputTokens > 0,
     `turn.completed tokenUsage ${JSON.stringify(usage)}`,
@@ -569,14 +568,19 @@ async function generate(ctx: Ctx): Promise<string> {
     const t = await openThread(ctx, "generate", { title: "New thread" });
     await sendTurn(ctx, t, "How do I rename a git branch? Reply in one short sentence. No tools.");
     ctx.step = "generated title (polling the thread over HTTP; titles ride the shell stream)";
+    let title: Obj | undefined;
     const deadline = Date.now() + 150_000; // inside the row timeout, so `finally` restores in time
     while (Date.now() < deadline) {
       const { thread } = (await httpGet(ctx, `/api/orchestration/threads/${t.threadId}`)) as Obj;
-      if (thread.title !== "New thread")
+      // T3's own text generation, not a title the agent's session reported ("provider:…").
+      if (thread.titleState?.version?.startsWith("server:"))
         return `title ${quote(thread.title)} (titleState ${JSON.stringify(thread.titleState)})`;
+      title = thread;
       await sleep(1000);
     }
-    throw new Error("no generated title after 150s");
+    throw new Error(
+      `no title from T3's text generation after 150s (${quote(title?.title)}, ${JSON.stringify(title?.titleState)})`,
+    );
   } finally {
     await ctx.rpc
       .call("server.updateSettings", { patch: { textGenerationModelSelection: before } })
@@ -588,8 +592,12 @@ async function generate(ctx: Ctx): Promise<string> {
 async function usageLimits(ctx: Ctx): Promise<string> {
   const limits = (await provider(ctx)).usageLimits as Obj | undefined;
   expect(limits !== undefined, "no usageLimits on the provider snapshot");
-  if (limits!.unavailable)
-    return `unavailable: ${limits!.unavailable.reason} ${quote(limits!.unavailable.message)}`;
+  const unavailable = limits!.unavailable;
+  expect(
+    !unavailable || unavailable.reason === "unsupported",
+    `plan usage read failed: ${quote(unavailable?.message)}`,
+  );
+  if (unavailable) return `unavailable: unsupported ${quote(unavailable.message)}`;
   expect(limits!.windows.length > 0, "usageLimits has no window and no unavailable reason");
   const credits = limits!.resetCredits;
   expect(ctx.agent !== "codex" || credits !== undefined, "codex usageLimits has no resetCredits");
@@ -634,6 +642,7 @@ async function plan(ctx: Ctx): Promise<string> {
   expect(asked.length === 0, `${asked.length} approval(s) surfaced in the plan turn`);
   expect(!NodeFS.existsSync(NodePath.join(t.dir, "README.md")), "README.md was written");
   expect(next.status === "ready" && /pong/i.test(next.text), `default turn: ${quote(next.text)}`);
+  expect(modes.at(-1) !== "plan", `the default turn ran in mode plan (modes ${modes.join(">")})`);
   return `plan of ${markdown.length} chars, no approval, no file; modes ${modes.join(">")}; default turn replied ${quote(next.text)}`;
 }
 
@@ -645,6 +654,12 @@ async function acceptEdits(ctx: Ctx): Promise<string> {
   expect(fileHas(t.dir, "hello"), `${FILE} missing after the write turn`);
   const shell = await sendTurn(ctx, t, SHELL);
   if (!(await asks(ctx, t, shell))) {
+    // Nothing asked: an agent policy only if the session really runs auto-accept-edits.
+    const session = t.events.items.findLast(isSessionSet)?.payload.session;
+    expect(
+      session?.runtimeMode === "auto-accept-edits",
+      `the session runs ${session?.runtimeMode}`,
+    );
     const events = await flushedProviderEvents(ctx, t);
     const mode = events.findLast((e) => e.payload?.config?.mode)?.payload.config.mode;
     throw new Skip(`${ctx.agent} ran the shell command without asking (mode ${mode ?? "none"})`);
@@ -659,17 +674,16 @@ async function mcpTool(ctx: Ctx): Promise<string> {
   if (!ctx.server.baseDir) throw new Skip("needs T3's provider event log; run without --url");
   const t = await openThread(ctx, "mcp-tool");
   const turn = await runTurn(ctx, t, MCP);
-  const calls = (await flushedProviderEvents(ctx, t)).filter(
+  // The MCP call itself; antigravity's ACP call is not typed as MCP yet, so its title names it.
+  const call = (await flushedProviderEvents(ctx, t)).find(
     (e) =>
       e.type === "item.completed" &&
-      JSON.stringify(e.payload).includes("list_thread_pull_requests"),
-  );
-  if (calls.length === 0 && !JSON.stringify(wireFrames(ctx, t)).includes("t3-code"))
-    throw new Skip("T3's MCP server was never declared to the agent (no HTTP MCP transport)");
+      ((e.payload.itemType === "mcp_tool_call" &&
+        e.payload.data?.kind?.Mcp?.tool === "list_thread_pull_requests") ||
+        e.payload.title === "t3-code_list_thread_pull_requests"),
+  )?.payload;
   expect(turn.status === "ready", `turn ended ${turn.status}: ${turn.lastError}`);
-  expect(calls.length > 0, `no completed call of the tool; reply ${quote(turn.text)}`);
-  // The call itself, not a tool search that names it (claude looks MCP tools up first).
-  const call = (calls.find((e) => e.payload.itemType === "mcp_tool_call") ?? calls[0]!).payload;
+  expect(call !== undefined, `no completed MCP call of the tool; reply ${quote(turn.text)}`);
   expect(call.status === "completed", `the tool call ended ${call.status}`);
   const answered = JSON.stringify(call.data ?? {}).includes("pullRequests");
   return `list_thread_pull_requests ${call.status} (${call.itemType})${answered ? ", T3's answer (pullRequests) in the item" : ""}; reply ${quote(turn.text)}`;
@@ -871,6 +885,19 @@ async function waitActivity(
       `turn ended ${e.payload.session.status} without ${kind}; reply ${quote(textAfter(t, from))}`,
     );
   return { a: e.payload.activity, index };
+}
+
+/** The turn's approval; SKIP when the wire shows the agent ran an ACP edit with no permission request (cursor). */
+async function waitApproval(ctx: Ctx, t: Thread, from: number): Promise<{ a: Obj; index: number }> {
+  return waitActivity(ctx, t, from, "approval.requested", 120_000).catch((error: Error) => {
+    const frames = wireFrames(ctx, t).map((f) => f.frame);
+    const edited = frames.some((f) => f.params?.update?.kind === "edit");
+    if (edited && !frames.some((f) => f.method === "session/request_permission"))
+      throw new Skip(
+        "the agent ran an edit without asking (no session/request_permission on the wire)",
+      );
+    throw error;
+  });
 }
 
 /** Whether the turn sent at `from` surfaced an approval before it ended. */
