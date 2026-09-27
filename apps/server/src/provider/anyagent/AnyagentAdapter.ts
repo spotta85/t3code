@@ -70,12 +70,12 @@ type Adapter = ProviderAdapterShape<AnyagentAdapterError>;
 
 /**
  * The adapter for T3 kind `kind` over the agent `launch` names: one session per thread, its events pumped into `streamEvents`.
- * `latest` reads the driver's newest probe (`null`: none yet); omitted, the adapter probes once itself.
+ * `details` reads the driver's newest probe (`null`: none yet).
  */
 export const makeAnyagentAdapter = (
   kind: ProviderDriverKind,
   launch: Launch,
-  latest?: () => AgentDetails | null,
+  details: () => AgentDetails | null,
 ): Effect.Effect<
   Adapter,
   never,
@@ -88,8 +88,6 @@ export const makeAnyagentAdapter = (
     const scope = yield* Effect.scope;
     const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
     const threads = new Map<ThreadId, Thread>();
-    const own = latest ? null : yield* probeDetails(use, launch);
-    const details = latest ?? (() => own);
     const features = () => details()?.capabilities.features ?? [];
 
     /** Runs one anyagent-ts call; a rejection becomes T3's adapter error. */
@@ -607,21 +605,6 @@ function nextEvent(
     stream.next().then(
       (r) => (r.done ? { done: true as const } : { done: false as const, value: r.value }),
       (error: unknown) => ({ done: true as const, error }),
-    ),
-  );
-}
-
-/** What the agent can do, probed once at build time; a failed probe is logged and offers nothing optional. */
-function probeDetails(
-  use: AnyagentRuntime["Service"]["use"],
-  { agent, options }: Launch,
-): Effect.Effect<AgentDetails | null> {
-  return Effect.tryPromise(() => use((runtime) => runtime.probe(agent, options))).pipe(
-    Effect.catch((cause) =>
-      Effect.logWarning("anyagent probe failed; rollback and compaction stay off", {
-        agent,
-        cause,
-      }).pipe(Effect.as(null)),
     ),
   );
 }

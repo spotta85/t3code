@@ -729,19 +729,18 @@ function run<A, E>(
   );
   return Effect.gen(function* () {
     const { use } = yield* AnyagentRuntime;
-    const { mcpTransports } = options;
-    const probed = mcpTransports
-      ? yield* Effect.promise(() => use((runtime) => runtime.probe("mock")))
-      : undefined;
-    const details = probed && {
+    // The driver's probe, done here: the mock's details, with the MCP transports a test asks for.
+    const probed = yield* Effect.promise(() => use((runtime) => runtime.probe("mock")));
+    const transports = options.mcpTransports ?? probed.capabilities.mcp_transports;
+    const details = {
       ...probed,
-      capabilities: { ...probed.capabilities, mcp_transports: mcpTransports! },
+      capabilities: { ...probed.capabilities, mcp_transports: transports },
     };
     const kind = options.kind ? ProviderDriverKind.make(options.kind) : KIND;
     const adapter = yield* makeAnyagentAdapter(
       kind,
       { agent: options.agent ?? "mock", options: options.launch ?? {} },
-      details && (() => details),
+      () => details,
     );
     const events: ProviderRuntimeEvent[] = [];
     yield* Stream.runForEach(adapter.streamEvents, (e) => Effect.sync(() => events.push(e))).pipe(
