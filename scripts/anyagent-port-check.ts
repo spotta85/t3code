@@ -45,6 +45,7 @@ const AGENTS: Record<string, AgentSpec> = {
 
 const FILE = "port-check.txt";
 const MARKER = "subagent-marker.txt";
+const SKILL = "port-check-skill";
 const WRITE = `Create a file named ${FILE} containing exactly the word hello. Use your file tools. Do not verify afterwards.`;
 const PONG = "Reply with the single word pong. No tools.";
 const SHELL =
@@ -54,6 +55,8 @@ const MCP =
 const PLAN =
   "Plan how to add a README to this project. Do not write files. Do not ask me any questions; make reasonable assumptions.";
 const COUNT = "Count from 1 to 2000, one number per line. No other text. No tools.";
+const SUBAGENT =
+  "Launch one subagent with your Agent tool (subagent_type general-purpose, run_in_background false) to list the files in this directory, wait for its result, then reply with just the word done. Do not list the files yourself.";
 
 /** The rows in run order: id, timeout, what passing means (printed by --dry-run), and the check. */
 const ROWS: Row[] = [
@@ -136,7 +139,7 @@ const ROWS: Row[] = [
     id: "generate",
     ms: 180_000,
     passes: "first turn on a 'New thread' gets a generated title (text generation)",
-    run: generate,
+    run: (ctx) => generatedTitle(ctx, "generate"),
   },
   {
     id: "usage-limits",
@@ -169,6 +172,38 @@ const ROWS: Row[] = [
     passes: "the agent calls T3's list_thread_pull_requests MCP tool and the call completes",
     run: mcpTool,
   },
+  {
+    id: "turn-diff",
+    ms: 150_000,
+    passes: `a write turn sends turn.diff.updated naming ${FILE} (codex app-server protocol)`,
+    run: turnDiff,
+  },
+  {
+    id: "subagent-info",
+    ms: 180_000,
+    passes:
+      "a subagent's task.started carries a role; a task.progress or task.completed its tokens",
+    run: subagentInfo,
+  },
+  {
+    id: "cancel-request",
+    ms: 180_000,
+    passes: `Ask mode: approval answered cancel resolves as cancel, no ${FILE}; an interrupting answer cancels the turn`,
+    run: cancelRequest,
+  },
+  {
+    id: "skills",
+    ms: 90_000,
+    passes: `a workspace skill (${SKILL}) shows in T3's workspace snapshot: a skill with a path, or a slash command`,
+    run: skills,
+  },
+  {
+    id: "schema-generate",
+    ms: 180_000,
+    passes:
+      "T3's title generation succeeds; the generate wire shows the output schema reaching the agent",
+    run: schemaGenerate,
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -181,7 +216,7 @@ async function main(): Promise<void> {
   const rows = flags.rows ? ROWS.filter((r) => flags.rows!.includes(r.id)) : ROWS;
   if (flags.dryRun) {
     for (const row of rows)
-      console.log(`${row.id.padEnd(13)} ${String(row.ms / 1000).padStart(4)}s  ${row.passes}`);
+      console.log(`${row.id.padEnd(15)} ${String(row.ms / 1000).padStart(4)}s  ${row.passes}`);
     console.log(`agents: ${flags.agents.join(", ")}`);
     return;
   }
@@ -212,7 +247,7 @@ async function main(): Promise<void> {
       for (const row of rows) {
         const { outcome, reason } = await runRow(row, ctx);
         results.push({ agent, row: row.id, outcome, reason });
-        console.log(`${agent.padEnd(7)} ${row.id.padEnd(13)} ${outcome.padEnd(4)} ${reason}`);
+        console.log(`${agent.padEnd(7)} ${row.id.padEnd(15)} ${outcome.padEnd(4)} ${reason}`);
       }
       await disable();
       await restore();
@@ -369,17 +404,9 @@ async function question(ctx: Ctx): Promise<string> {
 /** A foreground subagent lists the dir (MARKER in it): T3 gets its task and nested tools, never its text in the chat. */
 async function subagent(ctx: Ctx): Promise<string> {
   if (ctx.agent !== "claude") throw new Skip("claude only: the prompt names claude's Agent tool");
-  if (!ctx.server.baseDir) throw new Skip("needs T3's provider event log; run without --url");
-  const t = await openThread(ctx, "subagent");
-  NodeFS.writeFileSync(NodePath.join(t.dir, MARKER), "x");
-  const turn = await runTurn(
-    ctx,
-    t,
-    "Launch one subagent with your Agent tool (subagent_type general-purpose, run_in_background false) to list the files in this directory, wait for its result, then reply with just the word done. Do not list the files yourself.",
-  );
+  const { t, turn, events } = await subagentTurn(ctx, "subagent");
   const tasks = activities(t, turn.from).filter((a) => a.kind.startsWith("task."));
-  const nested = (await flushedProviderEvents(ctx, t)).filter((e) => e.payload?.parentToolUseId);
-  expect(turn.status === "ready", `turn ended ${turn.status}: ${turn.lastError}`);
+  const nested = events.filter((e) => e.payload?.parentToolUseId);
   expect(
     tasks.some((a) => a.kind === "task.started"),
     `no task.started activity (task activities: [${tasks.map((a) => a.kind).join(", ")}])`,
@@ -555,39 +582,6 @@ async function usage(ctx: Ctx): Promise<string> {
   return `inputTokens ${usage.inputTokens} (cached ${usage.cachedInputTokens}), outputTokens ${usage.outputTokens}`;
 }
 
-/** Text generation: the first turn of a "New thread" gets a title generated by this agent. */
-async function generate(ctx: Ctx): Promise<string> {
-  ctx.step = "read settings";
-  const settings = (await ctx.rpc.call("server.getSettings", {})) as Obj;
-  const before = settings.textGenerationModelSelection;
-  ctx.log.line(`textGenerationModelSelection before: ${JSON.stringify(before)}`);
-  await ctx.rpc.call("server.updateSettings", {
-    patch: { textGenerationModelSelection: selection(ctx) },
-  });
-  try {
-    const t = await openThread(ctx, "generate", { title: "New thread" });
-    await sendTurn(ctx, t, "How do I rename a git branch? Reply in one short sentence. No tools.");
-    ctx.step = "generated title (polling the thread over HTTP; titles ride the shell stream)";
-    let title: Obj | undefined;
-    const deadline = Date.now() + 150_000; // inside the row timeout, so `finally` restores in time
-    while (Date.now() < deadline) {
-      const { thread } = (await httpGet(ctx, `/api/orchestration/threads/${t.threadId}`)) as Obj;
-      // T3's own text generation, not a title the agent's session reported ("provider:…").
-      if (thread.titleState?.version?.startsWith("server:"))
-        return `title ${quote(thread.title)} (titleState ${JSON.stringify(thread.titleState)})`;
-      title = thread;
-      await sleep(1000);
-    }
-    throw new Error(
-      `no title from T3's text generation after 150s (${quote(title?.title)}, ${JSON.stringify(title?.titleState)})`,
-    );
-  } finally {
-    await ctx.rpc
-      .call("server.updateSettings", { patch: { textGenerationModelSelection: before } })
-      .catch(() => {});
-  }
-}
-
 /** The provider snapshot carries usage limits: windows, or why there are none; codex also its banked resets. */
 async function usageLimits(ctx: Ctx): Promise<string> {
   const limits = (await provider(ctx)).usageLimits as Obj | undefined;
@@ -689,6 +683,115 @@ async function mcpTool(ctx: Ctx): Promise<string> {
   return `list_thread_pull_requests ${call.status} (${call.itemType})${answered ? ", T3's answer (pullRequests) in the item" : ""}; reply ${quote(turn.text)}`;
 }
 
+/** A write turn sends turn.diff.updated naming the file; SKIP when none came on a non-codex wire (no turn/start). */
+async function turnDiff(ctx: Ctx): Promise<string> {
+  if (!ctx.server.baseDir) throw new Skip("needs T3's provider event log; run without --url");
+  const t = await openThread(ctx, "turn-diff");
+  const turn = await runTurn(ctx, t, WRITE);
+  expect(turn.status === "ready", `turn ended ${turn.status}: ${turn.lastError}`);
+  const diffs = (await flushedProviderEvents(ctx, t)).filter((e) => e.type === "turn.diff.updated");
+  const codex = wireFrames(ctx, t).some((f) => f.frame.method === "turn/start");
+  if (diffs.length === 0 && !codex)
+    throw new Skip("no turn.diff.updated and not codex's app-server wire (no turn/start)");
+  const naming = diffs.filter((e) => String(e.payload.unifiedDiff).includes(FILE));
+  expect(naming.length > 0, `${diffs.length} turn.diff.updated, none names ${FILE}`);
+  const turnIds = new Set(naming.map((e) => e.turnId ?? "none"));
+  return `${diffs.length} turn.diff.updated, ${naming.length} name ${FILE} (turn ids ${[...turnIds].join(", ")})`;
+}
+
+/** The subagent turn's task rows: a role on task.started, tokens on a task.progress or task.completed. */
+async function subagentInfo(ctx: Ctx): Promise<string> {
+  const { events } = await subagentTurn(ctx, "subagent-info");
+  const tasks = events.filter((e) => e.type.startsWith("task."));
+  if (!tasks.some((e) => e.type === "task.started"))
+    throw new Skip("the agent started no subagent task (no task.started)");
+  const role = tasks.find((e) => e.type === "task.started" && e.payload.role)?.payload.role;
+  const counted = tasks.filter((e) => e.payload.typedUsage?.totalTokens > 0);
+  const kinds = tasks.map((e) => e.type).join(", ");
+  expect(Boolean(role), `no task.started carries a role (${kinds})`);
+  expect(counted.length > 0, `no task.progress or task.completed carries tokens (${kinds})`);
+  const last = counted.at(-1)!;
+  return `role ${quote(role)}; ${counted.length} task row(s) with tokens, last ${last.payload.typedUsage.totalTokens} on ${last.type}`;
+}
+
+/** Ask mode: an approval answered cancel resolves as cancel, no file; an interrupting answer cancels the turn. */
+async function cancelRequest(ctx: Ctx): Promise<string> {
+  const t = await openThread(ctx, "cancel-request", { runtimeMode: "approval-required" });
+  const from = await sendTurn(ctx, t, WRITE);
+  await waitApproval(ctx, t, from);
+  const end = await settle(ctx, t, from, { decision: "cancel" });
+  const resolved = activities(t, from).filter((a) => a.kind === "approval.resolved");
+  const events = await flushedProviderEvents(ctx, t);
+  const state = events.find((e) => e.type === "turn.completed")?.payload.state ?? "missing";
+  // The answer on the wire says whether it ends the turn: claude's deny with interrupt, codex's cancel decision.
+  const ends = wireFrames(ctx, t).some(
+    (f) => f.dir === "out" && /"interrupt":true|"decision":"cancel"/.test(JSON.stringify(f.frame)),
+  );
+  const decisions = resolved.map((a) => a.payload.decision).join(", ");
+  expect(
+    resolved.some((a) => a.payload.decision === "cancel"),
+    `no approval.resolved with decision cancel ([${decisions}])`,
+  );
+  expect(!NodeFS.existsSync(NodePath.join(t.dir, FILE)), `${FILE} exists after cancel`);
+  expect(
+    !ends || state === "cancelled",
+    `the answer interrupts on the wire, but the turn ${state}`,
+  );
+  return `${end.answered} approval(s) cancelled, resolved [${decisions}], ${FILE} absent; turn ${state}${ends ? " (the answer interrupts)" : ""}, session ${end.status}`;
+}
+
+/** A skill in the workspace's `.codex/skills` and `.claude/skills` shows in T3's workspace snapshot for that folder. */
+async function skills(ctx: Ctx): Promise<string> {
+  const dir = rowDir(ctx, "skills");
+  for (const home of [".codex", ".claude"]) {
+    const skillDir = NodePath.join(dir, home, "skills", SKILL);
+    NodeFS.mkdirSync(skillDir, { recursive: true });
+    const body = `---\nname: ${SKILL}\ndescription: A port-check skill.\n---\nReply with the word skill.\n`;
+    NodeFS.writeFileSync(NodePath.join(skillDir, "SKILL.md"), body);
+  }
+  const ws = await workspaceSnapshot(ctx, dir);
+  const skill = ws.skills.find((s: Obj) => s.name === SKILL);
+  const command = ws.slashCommands.find((c: Obj) => c.name === SKILL);
+  if (skill) return `skill ${SKILL} at ${skill.path.slice(dir.length)} (scope ${skill.scope})`;
+  if (command)
+    return `${SKILL} among ${ws.slashCommands.length} slash commands (no path from the agent)`;
+  // Neither: SKIP when a folder without the skill lists the same commands (the agent reads no such folder).
+  const names = (w: Obj) =>
+    [...w.slashCommands, ...w.skills]
+      .map((c: Obj) => c.name)
+      .sort()
+      .join();
+  if (names(ws) === names(await workspaceSnapshot(ctx, rowDir(ctx, "skills-bare"))))
+    throw new Skip(
+      "the skill folders change nothing: the agent reads neither .codex nor .claude skills",
+    );
+  throw new Error(`${SKILL} missing, yet the skill folders changed the agent's commands`);
+}
+
+/** T3's title generation on this agent; its wire shows the schema (codex's outputSchema, claude's StructuredOutput). */
+async function schemaGenerate(ctx: Ctx): Promise<string> {
+  if (!ctx.server.baseDir)
+    throw new Skip("needs the server's base dir (the wire log); run without --url");
+  const file = NodePath.join(ctx.server.baseDir, "userdata/logs/provider/events.generate.wire.log");
+  const offset = NodeFS.existsSync(file) ? NodeFS.statSync(file).size : 0;
+  const title = await generatedTitle(ctx, "schema-generate");
+  const lines = NodeFS.existsSync(file)
+    ? NodeFS.readFileSync(file).subarray(offset).toString()
+    : "";
+  const frames = lines
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Obj);
+  expect(frames.length > 0, `no generate wire recorded at ${file}`);
+  const schema =
+    frames.find((f) => f.dir === "out" && f.frame.params?.outputSchema) ??
+    frames.find((f) => f.dir === "in" && JSON.stringify(f.frame).includes('"StructuredOutput"'));
+  if (!schema)
+    throw new Skip(`no schema on the generate wire (${frames.length} frames): free text; ${title}`);
+  const where = schema.frame.method ?? `${schema.frame.type} ${schema.frame.subtype ?? ""}`.trim();
+  return `${title}; schema on the wire in ${where}`;
+}
+
 // ---------------------------------------------------------------------------
 // THREAD HELPERS
 // ---------------------------------------------------------------------------
@@ -700,25 +803,7 @@ async function openThread(
   opts: { runtimeMode?: string; title?: string } = {},
 ): Promise<Thread> {
   ctx.step = "open thread";
-  const dir = NodeFS.mkdtempSync(
-    NodePath.join(OUT, "port-check-dirs", `${ctx.agent}-${row.replace(/\W/g, "")}-`),
-  );
-  NodeChildProcess.execFileSync("git", ["init", "-q"], { cwd: dir });
-  NodeChildProcess.execFileSync(
-    "git",
-    [
-      "-c",
-      "user.name=port-check",
-      "-c",
-      "user.email=port-check@local",
-      "commit",
-      "-q",
-      "--allow-empty",
-      "-m",
-      "init",
-    ],
-    { cwd: dir },
-  );
+  const dir = rowDir(ctx, row);
   const projectId = NodeCrypto.randomUUID();
   const threadId = NodeCrypto.randomUUID();
   const runtimeMode = opts.runtimeMode ?? "full-access";
@@ -746,6 +831,94 @@ async function openThread(
   const thread = { dir, threadId, runtimeMode, events };
   ctx.thread = thread;
   return thread;
+}
+
+/** A fresh git folder for the row under OUT. */
+function rowDir(ctx: Ctx, row: string): string {
+  const dir = NodeFS.mkdtempSync(
+    NodePath.join(OUT, "port-check-dirs", `${ctx.agent}-${row.replace(/\W/g, "")}-`),
+  );
+  NodeChildProcess.execFileSync("git", ["init", "-q"], { cwd: dir });
+  NodeChildProcess.execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=port-check",
+      "-c",
+      "user.email=port-check@local",
+      "commit",
+      "-q",
+      "--allow-empty",
+      "-m",
+      "init",
+    ],
+    { cwd: dir },
+  );
+  return dir;
+}
+
+/** The one-subagent turn (MARKER in the folder): the thread, the turn, and T3's provider events after it. */
+async function subagentTurn(
+  ctx: Ctx,
+  row: string,
+): Promise<{ t: Thread; turn: TurnEnd; events: Obj[] }> {
+  if (!ctx.server.baseDir) throw new Skip("needs T3's provider event log; run without --url");
+  const t = await openThread(ctx, row);
+  NodeFS.writeFileSync(NodePath.join(t.dir, MARKER), "x");
+  const turn = await runTurn(ctx, t, SUBAGENT);
+  expect(turn.status === "ready", `turn ended ${turn.status}: ${turn.lastError}`);
+  return { t, turn, events: await flushedProviderEvents(ctx, t) };
+}
+
+/** Sets text generation to this agent, sends the first turn of a "New thread", and polls for T3's generated title. */
+async function generatedTitle(ctx: Ctx, row: string): Promise<string> {
+  ctx.step = "read settings";
+  const settings = (await ctx.rpc.call("server.getSettings", {})) as Obj;
+  const before = settings.textGenerationModelSelection;
+  ctx.log.line(`textGenerationModelSelection before: ${JSON.stringify(before)}`);
+  await ctx.rpc.call("server.updateSettings", {
+    patch: { textGenerationModelSelection: selection(ctx) },
+  });
+  try {
+    const t = await openThread(ctx, row, { title: "New thread" });
+    await sendTurn(ctx, t, "How do I rename a git branch? Reply in one short sentence. No tools.");
+    ctx.step = "generated title (polling the thread over HTTP; titles ride the shell stream)";
+    let title: Obj | undefined;
+    const deadline = Date.now() + 150_000; // inside the row timeout, so `finally` restores in time
+    while (Date.now() < deadline) {
+      const { thread } = (await httpGet(ctx, `/api/orchestration/threads/${t.threadId}`)) as Obj;
+      // T3's own text generation, not a title the agent's session reported ("provider:…").
+      const version = String(thread.titleState?.version ?? "");
+      if (version.startsWith("server:"))
+        return `title ${quote(thread.title)} (titleState ${JSON.stringify(thread.titleState)})`;
+      // The agent named the session first; T3 then drops its own title (it replaces "New thread" only).
+      if (version.startsWith("provider:"))
+        throw new Skip(`the agent titled the thread first (${quote(thread.title)}); T3 keeps it`);
+      title = thread;
+      await sleep(1000);
+    }
+    throw new Error(
+      `no title from T3's text generation after 150s (${quote(title?.title)}, ${JSON.stringify(title?.titleState)})`,
+    );
+  } finally {
+    await ctx.rpc
+      .call("server.updateSettings", { patch: { textGenerationModelSelection: before } })
+      .catch(() => {});
+  }
+}
+
+/** T3's workspace snapshot of the agent for `dir`, probed there through server.refreshProviders. */
+async function workspaceSnapshot(ctx: Ctx, dir: string): Promise<Obj> {
+  ctx.step = `workspace probe ${dir}`;
+  const { instanceId } = ctx.spec;
+  const { providers } = (await ctx.rpc.call("server.refreshProviders", {
+    instanceId,
+    cwd: dir,
+  })) as Obj;
+  const p = (providers as Obj[]).find((x) => x.instanceId === instanceId)!;
+  const ws = p.workspaceSnapshots?.find((s: Obj) => s.cwd === dir);
+  expect(ws !== undefined, `no workspace snapshot for ${dir} (status ${p.status})`);
+  return ws;
 }
 
 /** Dispatches one user turn; returns the stream index it was sent at. */
