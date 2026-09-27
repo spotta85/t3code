@@ -30,7 +30,7 @@ const normalizeAvailability = (
  * from Playwright, agent-browser, and raw simctl/adb, so leaving them in would
  * talk it out of the only automation it still has.
  */
-const toolInstructions = (availability: boolean | T3CodeToolAvailability): string => {
+export const toolInstructions = (availability: boolean | T3CodeToolAvailability): string => {
   const tools = normalizeAvailability(availability);
   return [
     tools.browser ? T3_CODE_BROWSER_TOOL_INSTRUCTIONS : "",

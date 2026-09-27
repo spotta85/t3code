@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
@@ -19,6 +20,7 @@ import type { McpTransport, OpenOptions, Runtime } from "anyagent-ts";
 
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import type { AnyagentAdapterError } from "./Errors.ts";
 import { makeAnyagentAdapter } from "./AnyagentAdapter.ts";
@@ -443,6 +445,79 @@ describe("AnyagentAdapter over the mock binary", () => {
       );
     }).pipe(Effect.ensuring(Effect.sync(() => McpProviderSession.clearMcpProviderSession(A)))),
   );
+
+  it.live("every open sends T3's instructions; codex also gets the guide to its T3 tools", () =>
+    Effect.gen(function* () {
+      McpProviderSession.setMcpProviderSession({
+        environmentId: EnvironmentId.make("env-1"),
+        threadId: A,
+        providerSessionId: "provider-session-1",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        endpoint: "http://127.0.0.1:3773/mcp",
+        authorizationHeader: "Bearer secret",
+        capabilities: new Set(["preview"]),
+      });
+      const sent = (opened: () => ReadonlyArray<OpenOptions>) =>
+        opened().map((o) => o.instructions ?? "");
+      // A new session, the resume attempt, and the fresh session after it: runtime info and PR linking.
+      yield* run("resume", (adapter, _waitFor, _seen, opened) =>
+        Effect.gen(function* () {
+          const input = { threadId: A, cwd, runtimeMode: "approval-required" } as const;
+          yield* adapter.startSession(input);
+          yield* adapter.startSession({ ...input, resumeCursor: "mock-token" });
+          expect(sent(opened)).toHaveLength(3);
+          for (const text of sent(opened)) {
+            expect(text).toContain("through the Claude harness");
+            expect(text).toContain("<pull_request_linking>");
+            expect(text).not.toContain("T3 Code collaborative browser");
+          }
+        }),
+      );
+      // Codex with the thread's MCP server gets the browser guide (no device grant, no device guide).
+      yield* run(
+        "turn",
+        (adapter, _waitFor, _seen, opened) =>
+          Effect.gen(function* () {
+            yield* adapter.startSession({ threadId: A, cwd, runtimeMode: "approval-required" });
+            yield* adapter.startSession({ threadId: B, cwd, runtimeMode: "approval-required" });
+            const [withTools, without] = sent(opened);
+            expect(withTools).toContain("through the Codex harness");
+            expect(withTools).toContain("## T3 Code collaborative browser");
+            expect(withTools).not.toContain("## T3 Code devices");
+            expect(without).toContain("through the Codex harness");
+            expect(without).not.toContain("## T3 Code collaborative browser");
+          }),
+        { kind: "codex", mcpTransports: ["Http"] },
+      );
+    }).pipe(Effect.ensuring(Effect.sync(() => McpProviderSession.clearMcpProviderSession(A)))),
+  );
+
+  it.live("with T3's native log on, each thread's wire is recorded beside it; off, none is", () =>
+    Effect.gen(function* () {
+      const dir = NodeFS.mkdtempSync(NodePath.join(cwd, "t3-wire-"));
+      const start = (adapter: Adapter, threadId: ThreadId) =>
+        adapter.startSession({ threadId, cwd, runtimeMode: "approval-required" });
+      yield* run(
+        "turn",
+        (adapter, _waitFor, _seen, opened) =>
+          Effect.gen(function* () {
+            yield* start(adapter, A);
+            yield* start(adapter, B);
+            expect(opened().map((o) => o.record_wire)).toEqual([
+              NodePath.join(dir, "events.thread-a.wire.log"),
+              NodePath.join(dir, "events.thread-b.wire.log"),
+            ]);
+          }),
+        { nativeLog: NodePath.join(dir, "events.log") },
+      );
+      yield* run("turn", (adapter, _waitFor, _seen, opened) =>
+        Effect.gen(function* () {
+          yield* start(adapter, A);
+          expect(opened()[0]?.record_wire).toBeUndefined();
+        }),
+      );
+    }),
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -456,6 +531,7 @@ type WaitFor = (match: (e: ProviderRuntimeEvent) => boolean) => Effect.Effect<Pr
  * Every event the adapter emits is collected; `waitFor` polls them and, after
  * 5 s, dies listing what it saw. `opened` lists the options of every `open` sent.
  * `mcpTransports` overrides the mock's probe (it advertises none); `kind` replaces claudeAgent, `agent` the mock.
+ * `nativeLog` turns T3's native event log on at that path (off by default).
  */
 function run<A, E>(
   script: string,
@@ -469,6 +545,7 @@ function run<A, E>(
     readonly mcpTransports?: McpTransport[];
     readonly kind?: string;
     readonly agent?: string;
+    readonly nativeLog?: string;
   } = {},
 ) {
   const opens: OpenOptions[] = [];
@@ -485,6 +562,17 @@ function run<A, E>(
       })),
     ).pipe(Layer.provide(mock)),
     ServerConfig.layerTest(cwd, { prefix: "t3-anyagent-" }).pipe(Layer.provide(NodeServices.layer)),
+    Layer.succeed(ProviderEventLoggers, {
+      native:
+        options.nativeLog === undefined
+          ? undefined
+          : {
+              filePath: options.nativeLog,
+              write: () => Effect.void,
+              close: () => Effect.void,
+            },
+      canonical: undefined,
+    }),
   );
   return Effect.gen(function* () {
     const { use } = yield* AnyagentRuntime;

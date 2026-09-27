@@ -2,8 +2,9 @@
  * ProviderEventLoggers — single observability service that owns the shared
  * provider event log store and exposes its two runtime views:
  *
- *   - `native`    — provider-protocol events as the SDK emits them. Nothing
- *                   writes it since the anyagent port (docs/anyagent-port.md).
+ *   - `native`    — nothing writes it since the anyagent port; when it is
+ *                   set, anyagent records each thread's raw wire beside it
+ *                   (docs/anyagent-port.md).
  *   - `canonical` — runtime events after `ProviderService` has normalized
  *                   them onto `ProviderRuntimeEvent`.
  *

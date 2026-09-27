@@ -6,8 +6,10 @@
  */
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeCrypto from "node:crypto";
+import * as NodePath from "node:path";
 
 import {
+  PROVIDER_DISPLAY_NAMES,
   type ProviderDriverKind,
   type ProviderRuntimeEvent,
   type ProviderSession,
@@ -32,14 +34,17 @@ import * as Queue from "effect/Queue";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
-import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { resolveAttachmentPath, toSafeThreadAttachmentSegment } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { toolInstructions } from "../CodexDeveloperInstructions.ts";
 import {
   ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
 } from "../Errors.ts";
+import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
+import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
 import type { ProviderAdapterShape, ProviderThreadSnapshot } from "../Services/ProviderAdapter.ts";
 import {
   freshSessionWarning,
@@ -52,7 +57,7 @@ import {
   toProviderRuntimeEvents,
 } from "./AnyagentEvents.ts";
 import { AnyagentRuntime } from "./AnyagentRuntime.ts";
-import { openableOptions, selectedOptions } from "./AnyagentSnapshot.ts";
+import { offersPlan, openableOptions, selectedOptions } from "./AnyagentSnapshot.ts";
 import { type AnyagentAdapterError, toAdapterError } from "./Errors.ts";
 
 type Adapter = ProviderAdapterShape<AnyagentAdapterError>;
@@ -65,10 +70,15 @@ export const makeAnyagentAdapter = (
   kind: ProviderDriverKind,
   agent: string,
   latest?: () => AgentDetails | null,
-): Effect.Effect<Adapter, never, AnyagentRuntime | ServerConfig | Scope.Scope> =>
+): Effect.Effect<
+  Adapter,
+  never,
+  AnyagentRuntime | ServerConfig | ProviderEventLoggers | Scope.Scope
+> =>
   Effect.gen(function* () {
     const { use } = yield* AnyagentRuntime;
     const config = yield* ServerConfig;
+    const { native } = yield* ProviderEventLoggers;
     const scope = yield* Effect.scope;
     const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
     const threads = new Map<ThreadId, Thread>();
@@ -143,16 +153,19 @@ export const makeAnyagentAdapter = (
         yield* stopSession(input.threadId);
         const cwd = input.cwd ?? config.cwd;
         const configure = selectedOptions(kind, input.modelSelection, openableOptions(details()));
-        const mcpServers = t3McpServers(input.threadId, details());
+        const mcp = t3Mcp(input.threadId, details());
+        const wire = native && wireLogPath(native.filePath, input.threadId);
         const open = (token: string | undefined) =>
           call(input.threadId, "open", () =>
             use((runtime) =>
               runtime.open(agent, {
                 dir: cwd,
                 permission_mode: PERMISSION_MODE[input.runtimeMode],
+                instructions: sessionInstructions(kind, mcp),
                 ...(token !== undefined ? { resume: token } : {}),
-                ...(mcpServers.length > 0 ? { mcp_servers: mcpServers } : {}),
+                ...(mcp ? { mcp_servers: [t3McpServer(mcp)] } : {}),
                 ...(Object.keys(configure).length > 0 ? { configure } : {}),
+                ...(wire ? { record_wire: wire } : {}),
               }),
             ),
           );
@@ -195,7 +208,7 @@ export const makeAnyagentAdapter = (
       Effect.gen(function* () {
         const t = yield* requireThread(input.threadId);
         const plan = input.interactionMode === "plan";
-        if (plan && !offersPlan(t)) {
+        if (plan && !offersPlan(t.session.info.details.config_options)) {
           return yield* new ProviderAdapterValidationError({
             provider: kind,
             operation: "sendTurn",
@@ -426,13 +439,6 @@ function deliveredTurnId(t: Thread, delivery: Delivery): TurnId {
   return turnId;
 }
 
-/** Whether the session's live `mode` option offers `plan`. */
-function offersPlan(t: Thread): boolean {
-  const mode = t.session.info.details.config_options.find((o) => o.id === "mode");
-  if (!mode?.live || mode.kind === "Boolean") return false;
-  return mode.kind.Select.choices.some((c) => c.value === "plan");
-}
-
 /** T3's answer to one question (option labels or free text) in anyagent's shape: choice ids when every value names a choice, else text. */
 function questionAnswer(q: Question, value: unknown): QuestionAnswer {
   const values = (Array.isArray(value) ? value : [value]).filter(
@@ -474,12 +480,35 @@ function snapshot(t: Thread): ProviderThreadSnapshot {
   return { threadId: t.threadId, turns: t.history.map((id) => ({ id, items: [] })) };
 }
 
-/** T3's `t3-code` MCP server for this thread, only for agents whose probe takes HTTP MCP servers. */
-function t3McpServers(threadId: ThreadId, details: AgentDetails | null): McpServer[] {
+/** The thread's `t3-code` MCP session, only for agents whose probe takes HTTP MCP servers. */
+function t3Mcp(threadId: ThreadId, details: AgentDetails | null) {
   const mcp = McpProviderSession.readMcpProviderSession(threadId);
-  if (!mcp || !details?.capabilities.mcp_transports.includes("Http")) return [];
+  return mcp && details?.capabilities.mcp_transports.includes("Http") ? mcp : undefined;
+}
+
+/** T3's `t3-code` MCP server as `open` declares it: HTTP with the thread's bearer header. */
+function t3McpServer(mcp: McpProviderSession.McpProviderSessionConfig): McpServer {
   const headers = { Authorization: mcp.authorizationHeader };
-  return [{ name: "t3-code", connection: { Http: { url: mcp.endpoint, headers } } }];
+  return { name: "t3-code", connection: { Http: { url: mcp.endpoint, headers } } };
+}
+
+/** T3's instructions for every session: runtime info and PR linking; codex also gets the guide to the T3 tools it has. */
+function sessionInstructions(
+  kind: ProviderDriverKind,
+  mcp: McpProviderSession.McpProviderSessionConfig | undefined,
+): string {
+  const runtime = buildRuntimeInstructions({ harness: PROVIDER_DISPLAY_NAMES[kind] ?? kind });
+  const has = (capability: string) => mcp?.capabilities.has(capability) ?? false;
+  const tools =
+    kind === "codex" ? toolInstructions({ browser: has("preview"), device: has("device") }) : "";
+  return tools ? `${runtime}\n\n${tools}` : runtime;
+}
+
+/** The file anyagent records a thread's raw wire to: beside the native log, named like its per-thread files. */
+function wireLogPath(nativeLog: string, threadId: ThreadId): string | null {
+  const segment = toSafeThreadAttachmentSegment(threadId);
+  const prefix = NodePath.basename(nativeLog, NodePath.extname(nativeLog));
+  return segment && NodePath.join(NodePath.dirname(nativeLog), `${prefix}.${segment}.wire.log`);
 }
 
 /** The session-level fields every mapped event carries. */

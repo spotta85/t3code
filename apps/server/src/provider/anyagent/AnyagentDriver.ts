@@ -20,6 +20,7 @@ import type { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { withInstanceIdentity } from "../Drivers/instanceIdentity.ts";
 import { ProviderDriverError } from "../Errors.ts";
+import type { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import {
   defaultProviderContinuationIdentity,
@@ -64,6 +65,7 @@ export type AnyagentDriverEnv =
   | FileSystem.FileSystem
   | HttpClient.HttpClient
   | Path.Path
+  | ProviderEventLoggers
   | ServerConfig
   | ServerSettingsService;
 
