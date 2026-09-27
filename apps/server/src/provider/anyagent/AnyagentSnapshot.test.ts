@@ -3,7 +3,12 @@ import * as Schema from "effect/Schema";
 import { ProviderDriverKind, ProviderInstanceId, ServerProvider } from "@t3tools/contracts";
 import { type AgentDetails, AnyagentError, type ConfigOption, type PlanUsage } from "anyagent-ts";
 
-import { anyagentOptionId, selectedOptions, toServerProviderSnapshot } from "./AnyagentSnapshot.ts";
+import {
+  anyagentOptionId,
+  openableOptions,
+  selectedOptions,
+  toServerProviderSnapshot,
+} from "./AnyagentSnapshot.ts";
 
 const KIND = ProviderDriverKind.make("claudeAgent");
 const AT = "2026-09-26T00:00:00.000Z";
@@ -265,6 +270,41 @@ describe("toServerProviderSnapshot", () => {
     // A model without options of its own has none of the per-model ones (haiku has no effort).
     expect(descriptors("small")?.map((d) => d.id)).toEqual(["tier"]);
     expect(() => decode(stamp(snapshot))).not.toThrow();
+  });
+
+  it("a fast pick on a model that has fast reaches open and generate, though the current model lacks it", () => {
+    const fast: ConfigOption = {
+      id: "fast",
+      name: "Fast",
+      kind: "Boolean",
+      current: false,
+      live: true,
+    };
+    const model: ConfigOption = {
+      id: "model",
+      name: "Model",
+      kind: {
+        Select: {
+          choices: [
+            { value: "default", label: "Default" },
+            { value: "opus", label: "Opus", options: [fast] },
+          ],
+        },
+      },
+      current: "default",
+      live: true,
+    };
+    // The session's options are the current model's: `default` has no `fast`.
+    const details = { ...claude, config_options: [model] };
+    const selection = {
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      model: "opus",
+      options: [{ id: "fastMode", value: true }],
+    };
+    expect(selectedOptions(KIND, selection, openableOptions(details))).toEqual({
+      model: "opus",
+      fast: true,
+    });
   });
 
   it("plan usage becomes usage limits: windows by label, banked resets when reported", () => {

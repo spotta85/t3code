@@ -119,9 +119,11 @@ export function selectedOptions(
   return Object.fromEntries(picked.filter(([id]) => advertised.has(id)));
 }
 
-/** Option ids `open` and `generate` may set: the probed ones, or just the model when the probe failed. */
+/** Option ids `open` and `generate` may set: the probed ones and those a model carries, or just the model when the probe failed. */
 export function openableOptions(details: AgentDetails | null): ReadonlySet<string> {
-  return new Set(details ? details.config_options.map((o) => o.id) : ["model"]);
+  if (!details) return new Set(["model"]);
+  const options = details.config_options;
+  return new Set([...options.map((o) => o.id), ...perModelIds(options)]);
 }
 
 /** Whether the agent's live `mode` option offers `plan`: T3's plan turns switch to it. */
@@ -215,11 +217,10 @@ function agentModels(
 ): ReadonlyArray<ServerProviderModel> {
   const model = options.find((o) => o.id === "model");
   if (!model || model.kind === "Boolean") return [];
-  const choices = model.kind.Select.choices;
   // An option some model carries itself (effort, fast) is per model; the session's others apply to every model.
-  const perModel = new Set(choices.flatMap((c) => (c.options ?? []).map((o) => o.id)));
+  const perModel = perModelIds(options);
   const shared = options.filter((o) => !perModel.has(o.id));
-  return choices.map((choice) => ({
+  return model.kind.Select.choices.map((choice) => ({
     slug: choice.value,
     name: choice.label.trim() || choice.value,
     isCustom: false,
@@ -228,6 +229,13 @@ function agentModels(
       optionDescriptors: optionDescriptors(kind, [...(choice.options ?? []), ...shared]),
     }),
   }));
+}
+
+/** Ids of the options some choice of the `model` option carries itself (effort, fast). */
+function perModelIds(options: ReadonlyArray<ConfigOption>): ReadonlySet<string> {
+  const model = options.find((o) => o.id === "model");
+  const choices = model && model.kind !== "Boolean" ? model.kind.Select.choices : [];
+  return new Set(choices.flatMap((c) => (c.options ?? []).map((o) => o.id)));
 }
 
 /** anyagent's options T3 does not own, as model option descriptors (select or boolean). */
