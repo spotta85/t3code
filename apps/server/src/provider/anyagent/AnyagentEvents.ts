@@ -88,7 +88,7 @@ const CHOICES: Record<PermissionChoice, ProviderApprovalOption> = {
  * | ContextUsage             | thread.token-usage.updated                                |
  * | ContextCompacted         | thread.state.changed (compacted)                          |
  * | PlanUsageUpdated         | account.rate-limits.updated                               |
- * | Diagnostic               | runtime.warning, or runtime.error at level Error          |
+ * | Diagnostic               | runtime.warning; runtime.error at Error; none at Info     |
  * | TurnEnded                | turn.completed, state from the stop reason                |
  * | session error / end      | runtime.error + session.exited (sessionExitedEvents)      |
  */
@@ -160,6 +160,7 @@ export function toProviderRuntimeEvents(
   }
   if ("Diagnostic" in k) {
     const { level, message } = k.Diagnostic;
+    if (level === "Info") return []; // adapter chatter, e.g. codex frames anyagent does not map
     const type = level === "Error" ? "runtime.error" : "runtime.warning";
     return [{ ...base, type, payload: { message } }];
   }

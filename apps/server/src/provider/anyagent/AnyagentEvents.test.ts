@@ -291,7 +291,11 @@ describe("toProviderRuntimeEvents", () => {
     ]);
   });
 
-  it("Diagnostic -> runtime.warning, or runtime.error at level Error", () => {
+  it("Diagnostic -> runtime.warning, runtime.error at level Error, nothing at level Info", () => {
+    // Info is adapter chatter (codex: "unrecognized codex frame `hook/started`", dozens per turn).
+    expect(map({ Diagnostic: { level: "Info", message: "unrecognized codex frame `x`" } })).toEqual(
+      [],
+    );
     expect(map({ Diagnostic: { level: "Warning", message: "stalled" } })).toMatchObject([
       { type: "runtime.warning", payload: { message: "stalled" } },
     ]);
