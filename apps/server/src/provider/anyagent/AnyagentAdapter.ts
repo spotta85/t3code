@@ -14,14 +14,15 @@ import {
   type ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import type {
-  AgentDetails,
-  Delivery,
-  Event,
-  McpServer,
-  Question,
-  QuestionAnswer,
-  Session,
+import {
+  type AgentDetails,
+  AnyagentError,
+  type Delivery,
+  type Event,
+  type McpServer,
+  type Question,
+  type QuestionAnswer,
+  type Session,
 } from "anyagent-ts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -39,9 +40,11 @@ import {
 } from "../Errors.ts";
 import type { ProviderAdapterShape, ProviderThreadSnapshot } from "../Services/ProviderAdapter.ts";
 import {
+  freshSessionWarning,
   type OpenRequest,
   permissionChoice,
-  prePortResumeWarning,
+  PRE_PORT_RESUME_WARNING,
+  RESUME_FAILED_WARNING,
   sessionExitedEvents,
   sessionStartedEvent,
   toProviderRuntimeEvents,
@@ -53,11 +56,8 @@ import { type AnyagentAdapterError, toAdapterError } from "./Errors.ts";
 type Adapter = ProviderAdapterShape<AnyagentAdapterError>;
 
 /**
- * The adapter for one T3 driver kind over anyagent `agent` ("claude", "codex", ...).
- * Each thread owns one anyagent session; a fiber per session pumps its events,
- * mapped by AnyagentEvents, into one queue that is `streamEvents`.
- * `latest` reads the driver's newest probe (`null`: none succeeded yet), so capabilities follow
- * snapshot refreshes; omitted, the adapter probes once itself.
+ * The adapter for T3 kind `kind` over anyagent `agent`: one session per thread, its events pumped into `streamEvents`.
+ * `latest` reads the driver's newest probe (`null`: none yet); omitted, the adapter probes once itself.
  */
 export const makeAnyagentAdapter = (
   kind: ProviderDriverKind,
@@ -114,20 +114,31 @@ export const makeAnyagentAdapter = (
         // null is "no cursor": the session directory stores it when none was ever set.
         const resume = typeof input.resumeCursor === "string" ? input.resumeCursor : undefined;
         const prePort = typeof input.resumeCursor === "object" && input.resumeCursor !== null;
+        let warning = prePort ? PRE_PORT_RESUME_WARNING : undefined;
         yield* stopSession(input.threadId);
         const cwd = input.cwd ?? config.cwd;
         const configure = selectedOptions(kind, input.modelSelection, openableOptions(details()));
         const mcpServers = t3McpServers(kind, input.threadId, details());
-        const session = yield* call(input.threadId, "open", () =>
-          use((runtime) =>
-            runtime.open(agent, {
-              dir: cwd,
-              permission_mode: input.runtimeMode === "full-access" ? "AutoApprove" : "Ask",
-              ...(resume !== undefined ? { resume } : {}),
-              ...(mcpServers.length > 0 ? { mcp_servers: mcpServers } : {}),
-              ...(Object.keys(configure).length > 0 ? { configure } : {}),
-            }),
-          ),
+        const open = (token: string | undefined) =>
+          call(input.threadId, "open", () =>
+            use((runtime) =>
+              runtime.open(agent, {
+                dir: cwd,
+                permission_mode: input.runtimeMode === "full-access" ? "AutoApprove" : "Ask",
+                ...(token !== undefined ? { resume: token } : {}),
+                ...(mcpServers.length > 0 ? { mcp_servers: mcpServers } : {}),
+                ...(Object.keys(configure).length > 0 ? { configure } : {}),
+              }),
+            ),
+          );
+        // A token anyagent cannot resume would fail every later turn too: open fresh and say so.
+        const session = yield* open(resume).pipe(
+          Effect.catch((error) => {
+            if (!(error.cause instanceof AnyagentError && error.cause.kind === "ResumeFailed"))
+              return Effect.fail(error);
+            warning = RESUME_FAILED_WARNING;
+            return open(undefined);
+          }),
         );
         const now = yield* nowIso;
         const thread: Thread = {
@@ -147,7 +158,9 @@ export const makeAnyagentAdapter = (
         };
         threads.set(input.threadId, thread);
         yield* Queue.offer(events, sessionStartedEvent(context(kind, thread), session.info, now));
-        if (prePort) yield* Queue.offer(events, prePortResumeWarning(context(kind, thread), now));
+        if (warning) {
+          yield* Queue.offer(events, freshSessionWarning(context(kind, thread), warning, now));
+        }
         yield* pump(thread).pipe(Effect.forkIn(scope));
         return view(kind, thread);
       });
@@ -409,11 +422,7 @@ function snapshot(t: Thread): ProviderThreadSnapshot {
   return { threadId: t.threadId, turns: t.history.map((id) => ({ id, items: [] })) };
 }
 
-/**
- * T3's own `t3-code` MCP server (browser preview, devices, PR linking) for this thread, as
- * ProviderService issued it. Only for agents whose probe takes HTTP MCP servers: anyagent
- * refuses the others (opencode, antigravity) at open, see gaps.md.
- */
+/** T3's `t3-code` MCP server for this thread, only for agents whose probe takes HTTP MCP servers. */
 function t3McpServers(
   kind: ProviderDriverKind,
   threadId: ThreadId,
@@ -444,8 +453,7 @@ function unknownRequest(kind: ProviderDriverKind, label: string, requestId: stri
 
 /**
  * The next read of a session stream; a session error ends it with `error` set.
- * A plain next() so interrupting the pump abandons the read, where
- * Stream.fromAsyncIterable's return() would wait on it forever.
+ * A plain next(), so interrupting the pump abandons it (Stream.fromAsyncIterable's return() hangs).
  */
 function nextEvent(
   stream: AsyncGenerator<Event>,

@@ -165,6 +165,7 @@ describe("AnyagentDriver over the mock binary", () => {
         const snapshot = yield* instance.snapshot.getSnapshot;
         expect(snapshot).toMatchObject({ status: "error", enabled: true });
         expect(snapshot.message).toContain(bin);
+        expect(snapshot.message).toContain("set ANYAGENT_BIN");
         const error = yield* Effect.flip(
           instance.adapter.startSession({ threadId: A, cwd, runtimeMode: "full-access" }),
         );

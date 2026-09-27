@@ -12,6 +12,7 @@ import {
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import { extractJsonObject } from "@t3tools/shared/schemaJson";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 
 import type { TextGeneration } from "../../textGeneration/TextGeneration.ts";
@@ -46,6 +47,7 @@ export const makeAnyagentTextGeneration = (
 ) =>
   Effect.gen(function* () {
     const { use } = yield* AnyagentRuntime;
+    const fileSystem = yield* FileSystem.FileSystem;
 
     /** One reply for `prompt` in `cwd`, decoded with `schema`; every failure is a TextGenerationError. */
     const runJson = <S extends Schema.Top>(
@@ -122,18 +124,26 @@ export const makeAnyagentTextGeneration = (
           input.modelSelection,
           buildBranchNamePrompt({ message: input.message, attachments: input.attachments }),
         ).pipe(Effect.map((out) => ({ branch: sanitizeBranchFragment(out.branch) }))),
+      // Titles need only the prompt, so they run in an empty temp dir, not the checkout.
       generateThreadTitle: (input) =>
-        runJson(
-          "generateThreadTitle",
-          input.cwd,
-          input.modelSelection,
-          buildThreadTitlePrompt({
-            message: input.message,
-            previousTitle: input.previousTitle,
-            linkedContext: input.linkedContext,
-            attachments: input.attachments,
-          }),
-        ).pipe(
+        fileSystem.makeTempDirectoryScoped({ prefix: "t3code-title-" }).pipe(
+          Effect.mapError((cause) =>
+            failure("generateThreadTitle", "Failed to create the title directory.", cause),
+          ),
+          Effect.flatMap((dir) =>
+            runJson(
+              "generateThreadTitle",
+              dir,
+              input.modelSelection,
+              buildThreadTitlePrompt({
+                message: input.message,
+                previousTitle: input.previousTitle,
+                linkedContext: input.linkedContext,
+                attachments: input.attachments,
+              }),
+            ),
+          ),
+          Effect.scoped,
           Effect.map((out) => ({
             title: sanitizeThreadTitle(out.title),
             ...(out.needsRefinement ? { needsRefinement: true } : {}),
@@ -146,10 +156,12 @@ export const makeAnyagentTextGeneration = (
 // HELPERS
 // ---------------------------------------------------------------------------
 
+/** T3's text generation error for `operation`. */
 function failure(operation: Operation, detail: string, cause?: unknown) {
   return new TextGenerationError({ operation, detail, ...(cause !== undefined ? { cause } : {}) });
 }
 
+/** An error's message, or the value as text. */
 function messageOf(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }

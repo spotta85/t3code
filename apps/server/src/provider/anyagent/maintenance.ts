@@ -26,9 +26,8 @@ export const CLAUDE_UPDATE = makePackageManagedProviderMaintenanceResolver({
 });
 
 /**
- * Codex: npm package, or `codex update` for the standalone installer. That tree
- * lives in the shared home even when a shadow home is in use, so the updater
- * runs against `sharedHomePath`.
+ * Codex: npm package, or `codex update` for the standalone installer. That tree lives in the
+ * shared home even with a shadow home, so the updater runs against `sharedHomePath`.
  */
 export function makeCodexMaintenanceResolver(sharedHomePath: string) {
   return makePackageManagedProviderMaintenanceResolver({

@@ -56,14 +56,10 @@ with a readable, current version.
 
 ## Protocol traps
 
-Codex async questions arrive as notifications and are answered with a new user message. There is
-no pending RPC response to send. Blocking questions still use the request/response path. The
-[decider](../../apps/server/src/orchestration/decider.ts) records an async answer and its user
-message together.
-
-An async question can outlive the turn or a server restart. The engine reads that request's
-durable activity before resolving it because the in-memory command snapshot omits old activities.
-Do not infer that a request has disappeared merely because it is outside the recent window.
+An async question (only threads from before the anyagent port have them) can outlive the turn or a
+server restart. The engine reads that request's durable activity before resolving it because the
+in-memory command snapshot omits old activities. Do not infer that a request has disappeared
+merely because it is outside the recent window.
 
 Capabilities must describe what the provider can actually do. Antigravity can capture workspace
 checkpoints but cannot roll back its conversation. The [checkpoint boundary](./overview.md#turn-completion-and-checkpoints)

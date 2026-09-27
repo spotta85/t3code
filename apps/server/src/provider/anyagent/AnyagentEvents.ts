@@ -7,6 +7,7 @@ import {
   EventId,
   RuntimeItemId,
   RuntimeRequestId,
+  RuntimeTaskId,
   type CanonicalItemType,
   type CanonicalRequestType,
   type ProviderApprovalDecision,
@@ -76,14 +77,17 @@ const CHOICES: Record<PermissionChoice, ProviderApprovalOption> = {
  * | TextDelta                | content.delta (assistant_text)                            |
  * | ReasoningDelta           | content.delta (reasoning_text)                            |
  * | MessageEnded             | item.completed (assistant_message, or reasoning)          |
+ * | the three above in a     | none: a subagent's narration stays out of the parent chat |
+ * | subagent (parent_tool_id)|                                                           |
  * | UserMessage              | none: T3 records its own user messages                    |
  * | ToolUpdated              | item.started (first seen), item.updated, item.completed (done) |
+ * | ToolUpdated Subagent     | also task.started (first seen), task.completed (done)     |
  * | ToolOutputDelta          | content.delta (command_output)                            |
  * | PlanUpdated              | turn.plan.updated                                         |
  * | RequestOpened Permission | request.opened, options = offered choices as T3 decisions |
  * | RequestOpened Question   | user-input.requested                                      |
  * | RequestClosed            | request.resolved / user-input.resolved, with T3's answer  |
- * | SessionUpdated           | session.configured                                        |
+ * | SessionUpdated           | session.configured; thread.metadata.updated when titled   |
  * | StatusChanged            | none: T3 derives status from turn and request events      |
  * | ContextUsage             | thread.token-usage.updated                                |
  * | ContextCompacted         | thread.state.changed (compacted)                          |
@@ -92,6 +96,8 @@ const CHOICES: Record<PermissionChoice, ProviderApprovalOption> = {
  * |                          | whose extensions carry a raw frame (unmapped wire frame)  |
  * | TurnEnded                | turn.completed, state from the stop reason                |
  * | session error / end      | runtime.error + session.exited (sessionExitedEvents)      |
+ * | (no source in anyagent)  | task.progress, turn.diff.updated, tool.denied,            |
+ * |                          | tool.progress, model.rerouted: gaps.md rows               |
  */
 export function toProviderRuntimeEvents(
   ctx: EventContext,
@@ -108,6 +114,9 @@ export function toProviderRuntimeEvents(
   if (k === "ContextCompacted") {
     return [{ ...base, type: "thread.state.changed", payload: { state: "compacted" } }];
   }
+  // A subagent's own text belongs to its tool, not the parent chat (the old claude adapter dropped it too).
+  const nested = ev.turn_info?.parent_tool_id;
+  if (nested && ("TextDelta" in k || "ReasoningDelta" in k || "MessageEnded" in k)) return [];
   if ("TurnStarted" in k) return [{ ...base, type: "turn.started", payload: {} }];
   if ("TextDelta" in k)
     return [delta(base, k.TextDelta.message_id, "assistant_text", k.TextDelta.text)];
@@ -131,7 +140,9 @@ export function toProviderRuntimeEvents(
   }
   if ("ToolUpdated" in k) {
     const tool = k.ToolUpdated;
-    return [toolEvent(base, tool, ctx.tools.has(tool.id), ev.turn_info?.parent_tool_id)];
+    const seen = ctx.tools.has(tool.id);
+    const item = toolEvent(base, tool, seen, ev.turn_info?.parent_tool_id);
+    return tool.kind === "Subagent" ? [item, ...taskEvents(base, tool, seen)] : [item];
   }
   if ("PlanUpdated" in k) {
     const plan = k.PlanUpdated.entries.map((e) => ({
@@ -145,7 +156,13 @@ export function toProviderRuntimeEvents(
     return requestClosed(base, ctx.requests.get(k.RequestClosed.request_id));
   if ("SessionUpdated" in k) {
     const config = { ...k.SessionUpdated.configuration.options };
-    return [{ ...base, type: "session.configured", payload: { config } }];
+    const name = k.SessionUpdated.title?.trim();
+    return [
+      { ...base, type: "session.configured", payload: { config } },
+      ...(name
+        ? [{ ...extra(base, 1), type: "thread.metadata.updated" as const, payload: { name } }]
+        : []),
+    ];
   }
   if ("ContextUsage" in k) {
     const { used_tokens, window_tokens } = k.ContextUsage;
@@ -189,20 +206,23 @@ export function sessionStartedEvent(
 export const PRE_PORT_RESUME_WARNING =
   "Provider session from before the anyagent port could not be resumed; started a new session";
 
-/** The one warning a thread gets when its pre-port cursor was dropped for a fresh session. */
-export function prePortResumeWarning(ctx: SessionContext, at: string): ProviderRuntimeEvent {
+/** Shown when anyagent could not resume a thread's stored cursor (`ResumeFailed`). */
+export const RESUME_FAILED_WARNING = "Provider session could not be resumed; started a new session";
+
+/** The one warning a thread gets when its stored cursor was dropped for a fresh session. */
+export function freshSessionWarning(
+  ctx: SessionContext,
+  message: string,
+  at: string,
+): ProviderRuntimeEvent {
   return {
-    ...sessionBase(ctx, "pre-port-resume", at),
+    ...sessionBase(ctx, "fresh-session", at),
     type: "runtime.warning",
-    payload: { message: PRE_PORT_RESUME_WARNING },
+    payload: { message },
   };
 }
 
-/**
- * T3's view of a session stream ending: graceful on close; on a session error
- * (AuthRequired, ProcessExited, ...) a runtime.error with the error body, then
- * session.exited with the reason.
- */
+/** A session stream ending: graceful on close; on a session error a runtime.error, then session.exited. */
 export function sessionExitedEvents(
   ctx: SessionContext,
   error: unknown,
@@ -257,6 +277,7 @@ const PLAN_STATUS = {
   InProgress: "inProgress",
   Completed: "completed",
 } as const;
+const TASK_STATUS = { Completed: "completed", Failed: "failed", Cancelled: "stopped" } as const;
 const TOOL_STATUS = {
   Pending: "inProgress",
   Running: "inProgress",
@@ -304,6 +325,32 @@ function toolEvent(
       ...(parent ? { parentToolUseId: parent } : {}),
     },
   };
+}
+
+/** A subagent tool's T3 task: started when first seen, completed once it finishes (ids after the item's). */
+function taskEvents(base: Base, tool: ToolUpdate, seen: boolean): ProviderRuntimeEvent[] {
+  const title = tool.title.trim();
+  const task = {
+    taskId: RuntimeTaskId.make(tool.id),
+    taskType: "subagent",
+    toolUseId: tool.id,
+    ...(title ? { title } : {}),
+  };
+  const out: ProviderRuntimeEvent[] = [];
+  if (!seen) {
+    const payload = { ...task, ...(title ? { description: title } : {}) };
+    out.push({ ...extra(base, 1), type: "task.started", payload });
+  }
+  if (tool.status !== "Pending" && tool.status !== "Running") {
+    const status = TASK_STATUS[tool.status];
+    out.push({ ...extra(base, 2), type: "task.completed", payload: { ...task, status } });
+  }
+  return out;
+}
+
+/** `base` for the i-th extra T3 event one anyagent event maps to. */
+function extra(base: Base, i: number): Base {
+  return { ...base, eventId: EventId.make(`${base.eventId.slice(0, -2)}:${i}`) };
 }
 
 /** A permission as an approval request, a question as a user-input request. */

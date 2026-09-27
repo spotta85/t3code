@@ -68,9 +68,8 @@ export type AnyagentDriverEnv =
   | ServerSettingsService;
 
 /**
- * The driver for T3 kind `kind` over anyagent agent `agent`. `create` probes the
- * agent once (enabled instances only) for the snapshot and the adapter; each
- * snapshot refresh probes again, and the adapter reads the newest good probe.
+ * The driver for T3 kind `kind` over anyagent `agent`: `create` probes once for the snapshot and adapter;
+ * each snapshot refresh probes again, and the adapter reads the newest good probe.
  */
 export const makeAnyagentDriver = (
   kind: ProviderDriverKind,
@@ -190,10 +189,11 @@ export const makeAnyagentDriver = (
 // HELPERS
 // ---------------------------------------------------------------------------
 
-/**
- * Probes the agent. A failure is a result: a missing agent carries anyagent's
- * install hint (from `discover`), anything else its error.
- */
+/** Appended when the anyagent binary itself is missing. */
+const ANYAGENT_BIN_HINT =
+  " (anyagent binary not found: set ANYAGENT_BIN to it, see docs/anyagent-port.md)";
+
+/** Probes the agent; a failure is a result: a missing agent carries anyagent's install hint, anything else its error. */
 async function probeAgent(
   use: AnyagentRuntime["Service"]["use"],
   agent: string,
@@ -206,7 +206,8 @@ async function probeAgent(
       cause instanceof AnyagentError
         ? `${cause.kind}: ${cause.message}`
         : cause instanceof Error
-          ? cause.message
+          ? cause.message +
+            ((cause as NodeJS.ErrnoException).code === "ENOENT" ? ANYAGENT_BIN_HINT : "")
           : String(cause);
     if (!(cause instanceof AnyagentError && cause.kind === "NotInstalled")) return { error };
     const report = await use((runtime) => runtime.discover()).catch(() => undefined);

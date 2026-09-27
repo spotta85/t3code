@@ -22,7 +22,7 @@ import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import type { AnyagentAdapterError } from "./Errors.ts";
 import { makeAnyagentAdapter } from "./AnyagentAdapter.ts";
-import { PRE_PORT_RESUME_WARNING } from "./AnyagentEvents.ts";
+import { PRE_PORT_RESUME_WARNING, RESUME_FAILED_WARNING } from "./AnyagentEvents.ts";
 import { AnyagentRuntime, makeAnyagentRuntimeLayer } from "./AnyagentRuntime.ts";
 
 // The anyagent checkout next to this one; its release binary is built with `--features mock`.
@@ -238,32 +238,39 @@ describe("AnyagentAdapter over the mock binary", () => {
     ),
   );
 
-  // Review focus 4: a stale resume token fails typed instead of opening a fresh session.
-  it.live("a resume token anyagent no longer knows fails typed, not a silent fresh session", () =>
-    run("resume", (adapter) =>
+  // A stale token would fail every later turn: it opens fresh with one warning instead.
+  it.live("a resume token anyagent no longer knows opens a fresh session with one warning", () =>
+    run("resume", (adapter, waitFor, seen, opened) =>
       Effect.gen(function* () {
-        const session = yield* adapter.startSession({
-          threadId: A,
-          cwd,
-          runtimeMode: "approval-required",
-        });
-        expect(session.resumeCursor).toBe("mock-token");
+        const input = { threadId: A, cwd, runtimeMode: "approval-required" } as const;
+        expect((yield* adapter.startSession(input)).resumeCursor).toBe("mock-token");
         yield* adapter.stopSession(A);
 
-        const start = (resumeCursor: unknown) =>
-          Effect.flip(
-            adapter.startSession({
-              threadId: A,
-              cwd,
-              runtimeMode: "approval-required",
-              resumeCursor,
-            }),
-          );
-        const stale = yield* start("mock-token");
-        expect(stale).toMatchObject({ _tag: "ProviderAdapterRequestError" });
-        expect(stale.message).toContain("ResumeFailed");
-        expect(yield* adapter.hasSession(A)).toBe(false);
+        const session = yield* adapter.startSession({ ...input, resumeCursor: "mock-token" });
+        expect(session).toMatchObject({ threadId: A, status: "ready", resumeCursor: "mock-token" });
+        expect(opened().map((o) => o.resume)).toEqual([undefined, "mock-token", undefined]);
+        expect(yield* waitFor((e) => e.type === "runtime.warning")).toMatchObject({
+          payload: { message: RESUME_FAILED_WARNING },
+        });
+        expect(seen().filter((e) => e.type === "runtime.warning")).toHaveLength(1);
+        expect(yield* adapter.hasSession(A)).toBe(true);
       }),
+    ),
+  );
+
+  it.live("an open failure other than ResumeFailed still fails typed", () =>
+    run(
+      "turn",
+      (adapter) =>
+        Effect.gen(function* () {
+          const error = yield* Effect.flip(
+            adapter.startSession({ threadId: A, cwd, runtimeMode: "approval-required" }),
+          );
+          expect(error).toMatchObject({ _tag: "ProviderAdapterRequestError" });
+          expect(error.message).toContain("NotInstalled");
+          expect(yield* adapter.hasSession(A)).toBe(false);
+        }),
+      { agent: "not-an-agent" },
     ),
   );
 
@@ -373,7 +380,7 @@ type WaitFor = (match: (e: ProviderRuntimeEvent) => boolean) => Effect.Effect<Pr
  * Runs `body` against an adapter over `anyagent serve --mock <script>.json`.
  * Every event the adapter emits is collected; `waitFor` polls them and, after
  * 5 s, dies listing what it saw. `opened` lists the options of every `open` sent.
- * `mcpTransports` overrides the mock's probe (it advertises none); `kind` replaces claudeAgent.
+ * `mcpTransports` overrides the mock's probe (it advertises none); `kind` replaces claudeAgent, `agent` the mock.
  */
 function run<A, E>(
   script: string,
@@ -383,7 +390,11 @@ function run<A, E>(
     seen: () => Seen,
     opened: () => ReadonlyArray<OpenOptions>,
   ) => Effect.Effect<A, E>,
-  options: { readonly mcpTransports?: McpTransport[]; readonly kind?: string } = {},
+  options: {
+    readonly mcpTransports?: McpTransport[];
+    readonly kind?: string;
+    readonly agent?: string;
+  } = {},
 ) {
   const opens: OpenOptions[] = [];
   const mock = makeAnyagentRuntimeLayer({
@@ -411,7 +422,11 @@ function run<A, E>(
       capabilities: { ...probed.capabilities, mcp_transports: mcpTransports! },
     };
     const kind = options.kind ? ProviderDriverKind.make(options.kind) : KIND;
-    const adapter = yield* makeAnyagentAdapter(kind, "mock", details && (() => details));
+    const adapter = yield* makeAnyagentAdapter(
+      kind,
+      options.agent ?? "mock",
+      details && (() => details),
+    );
     const events: ProviderRuntimeEvent[] = [];
     yield* Stream.runForEach(adapter.streamEvents, (e) => Effect.sync(() => events.push(e))).pipe(
       Effect.forkScoped,

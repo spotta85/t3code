@@ -19,15 +19,61 @@ ProviderService ─► ProviderAdapterShape ─► AnyagentAdapter ─► anyage
 
 Features anyagent does not have yet are listed in anyagent's `docs/ports/t3-code/gaps.md`.
 
-## Threads created before the port
+## Running it
 
-They cannot resume their provider session. The old adapters stored an object-shaped resume
-cursor, which anyagent cannot decode. On the next turn the adapter opens a fresh session instead
-and adds one warning to the thread: "Provider session from before the anyagent port could not be
-resumed; started a new session". The new session's cursor, when the agent has one, replaces the
-old one. The agent does not see the earlier turns; the transcript stays readable in T3. A cursor
-anyagent recognizes but no longer knows (`ResumeFailed`) still fails the turn with a typed
-error.
+The server needs two things from the anyagent repo: the `anyagent-ts` package (linked, not from
+npm) and the `anyagent` binary. Clone anyagent next to this repo:
+
+```
+Projects/
+├─ t3code/     this repo; apps/server links ../../../anyagent/packages/node/anyagent
+└─ anyagent/
+```
+
+```bash
+git clone https://github.com/spotta85/anyagent ../anyagent
+(cd ../anyagent && cargo build --release --features mock)              # the binary (mock: for tests)
+(cd ../anyagent/packages/node/anyagent && npm install && npm run build) # dist/ is not checked in
+pnpm install
+export ANYAGENT_BIN=$PWD/../anyagent/target/release/anyagent            # the binary the server runs
+pnpm dev
+```
+
+Without `ANYAGENT_BIN` the server looks for anyagent-ts's prebuilt platform package; when neither
+is there, every provider card shows an error that says to set `ANYAGENT_BIN`.
+
+Checks: `cd apps/server && npx vp test run src/provider/anyagent/` (runs against the mock
+binary), and the live check against real agents:
+`node scripts/anyagent-port-check.ts --agents claude,codex [--rows open+stream,resume] [--dry-run]`
+(logs go to `$PORT_CHECK_OUT`, default `<tmpdir>/anyagent-port-check`).
+
+## What changes for you
+
+| Area                                        | Before                                                                                                                                                                                           | Now                                                                                                                          |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| Provider settings                           | `binaryPath`, environment, `launchArgs`, codex home paths, claude `autoCompactWindow`, cursor `apiEndpoint`, antigravity `apiKey`/`authMethod`/GCP fields, opencode `serverUrl`/`serverPassword` | Ignored. anyagent runs the agent it finds on `PATH` with the server's environment. `binaryPath` only feeds the Update button |
+| Plan mode                                   | Plan toggle in the composer                                                                                                                                                                      | Hidden; a plan turn fails                                                                                                    |
+| Accept-edits mode                           | Edits run without asking                                                                                                                                                                         | Same as Ask: edits prompt too                                                                                                |
+| Skills picker                               | Workspace skills listed                                                                                                                                                                          | Empty                                                                                                                        |
+| Session instructions                        | T3 added runtime info, PR linking and codex's mode prompt to every session                                                                                                                       | None sent                                                                                                                    |
+| Antigravity                                 | T3 ran its managed install                                                                                                                                                                       | The managed install still downloads but is unused: anyagent runs its own `agy`                                               |
+| T3 MCP tools (browser, devices, PR linking) | Every agent                                                                                                                                                                                      | claude only; codex, opencode and antigravity run without them                                                                |
+
+Each row has a matching gaps.md row in the anyagent repo.
+
+## Threads that cannot resume
+
+The adapter opens a fresh session and adds one warning to the thread instead of failing every
+turn:
+
+| Stored cursor                                                              | Warning                                                                                      |
+| -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| From T3's pre-port adapters (an object anyagent cannot decode)             | "Provider session from before the anyagent port could not be resumed; started a new session" |
+| A token anyagent reports `ResumeFailed` for (the agent forgot the session) | "Provider session could not be resumed; started a new session"                               |
+
+The new session's cursor, when the agent has one, replaces the old one. The agent does not see
+the earlier turns; the transcript stays readable in T3. Any other open failure still fails the
+turn with a typed error.
 
 ## Dropped by the port
 

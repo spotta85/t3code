@@ -39,9 +39,8 @@ export interface SnapshotSettings {
 }
 
 /**
- * The provider snapshot for one probe (`undefined` when the instance is disabled
- * and was not probed). Models come from the agent's `model` option; every other
- * option T3 does not own becomes a model option descriptor.
+ * The provider snapshot for one probe (`undefined`: disabled, not probed). Models come from the
+ * agent's `model` option; every other option T3 does not own becomes a model option descriptor.
  */
 export function toServerProviderSnapshot(
   kind: ProviderDriverKind,
@@ -75,9 +74,8 @@ export function toServerProviderSnapshot(
 }
 
 /**
- * The id T3's own descriptors used for anyagent's `effort` per kind, so the composer, settings
- * and stored picks keep working (the web drops picks whose id no descriptor has). Other kinds,
- * claude included, keep `effort`.
+ * T3's old id for anyagent's `effort` per kind, so stored picks keep working (the web drops picks
+ * whose id no descriptor has). Other kinds, claude included, keep `effort`.
  */
 const EFFORT_ID: Readonly<Record<string, string>> = {
   codex: "reasoningEffort",
@@ -241,6 +239,7 @@ function slashCommand(command: AgentDetails["commands"][number]): ServerProvider
   };
 }
 
+/** True for a string with non-whitespace content. */
 function nonEmpty(value: string | null | undefined): value is string {
   return typeof value === "string" && value.trim() !== "";
 }

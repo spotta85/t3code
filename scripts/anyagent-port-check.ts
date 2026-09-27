@@ -1,18 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off globalConsole:off globalDate:off globalTimers:off globalFetch:off preferSchemaOverJson:off - a plain Node script, no Effect runtime.
 /**
- * anyagent-port-check - live feature check for T3 Code running on anyagent.
- *
- * Drives a T3 server over its WebSocket RPC (the same wire the web app uses) and
- * checks one feature per row, per agent. Rows read `orchestration.subscribeThread`
- * events, never raw provider events.
- *
- *   node scripts/anyagent-port-check.ts [--agents claude,codex] [--rows a,b] [--dry-run]
- *                                       [--url ws://127.0.0.1:3773/ws --token <bearer>]
- *
- * Without --url it starts `t3 serve` headless on a free port with a fresh base dir
- * (needs ANYAGENT_BIN or the default sibling checkout), issues a token, stops it at the end.
- * Every frame sent and received goes to `port-check-<agent>-<timestamp>.log` in the out dir
- * ($PORT_CHECK_OUT, else <os tmpdir>/anyagent-port-check).
+ * anyagent-port-check - live check of T3 Code on anyagent: one feature per row, per agent, over T3's WebSocket RPC.
+ * `node scripts/anyagent-port-check.ts [--agents a,b] [--rows a,b] [--dry-run] [--url ws://… --token t]`; see docs/anyagent-port.md.
  */
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
@@ -41,6 +30,7 @@ const AGENTS: Record<string, AgentSpec> = {
 };
 
 const FILE = "port-check.txt";
+const MARKER = "subagent-marker.txt";
 const WRITE = `Create a file named ${FILE} containing exactly the word hello. Use your file tools. Do not verify afterwards.`;
 const PONG = "Reply with the single word pong. No tools.";
 const COUNT = "Count from 1 to 2000, one number per line. No other text. No tools.";
@@ -83,6 +73,13 @@ const ROWS: Row[] = [
     ms: 150_000,
     passes: "user-input request appears, answered, resolved, turn completes",
     run: question,
+  },
+  {
+    id: "subagent",
+    ms: 180_000,
+    passes:
+      "claude: a subagent lists the files; task.started activity, its text stays out of the chat",
+    run: subagent,
   },
   {
     id: "model-switch",
@@ -254,10 +251,7 @@ async function toolDiff(ctx: Ctx): Promise<string> {
   return `${naming.length} tool activit(ies) name ${FILE} (${naming[0]!.kind} ${quote(naming[0]!.summary)}), file exists, turn diff files [${diffs.join(", ")}]`;
 }
 
-/**
- * Ask mode: the write asks, a second turn is queued behind the open request (lifecycle-guard check),
- * the script approves, both turns complete and the file lands.
- */
+/** Ask mode: the write asks, a second turn queues behind it; approve, both turns complete, the file lands. */
 async function permission(ctx: Ctx): Promise<string> {
   const t = await openThread(ctx, "permission", { runtimeMode: "approval-required" });
   const from = await sendTurn(ctx, t, WRITE);
@@ -310,10 +304,35 @@ async function question(ctx: Ctx): Promise<string> {
   return `asked ${quote(q.question)}, answered ${quote(pick)}, resolved, reply ${quote(turn.text)}`;
 }
 
+/** A foreground subagent lists the dir (MARKER in it): T3 gets its task and nested tools, never its text in the chat. */
+async function subagent(ctx: Ctx): Promise<string> {
+  if (ctx.agent !== "claude") throw new Skip("claude only: the prompt names claude's Agent tool");
+  if (!ctx.server.baseDir) throw new Skip("needs T3's provider event log; run without --url");
+  const t = await openThread(ctx, "subagent");
+  NodeFS.writeFileSync(NodePath.join(t.dir, MARKER), "x");
+  const turn = await runTurn(
+    ctx,
+    t,
+    "Launch one subagent with your Agent tool (subagent_type general-purpose, run_in_background false) to list the files in this directory, wait for its result, then reply with just the word done. Do not list the files yourself.",
+  );
+  const tasks = activities(t, turn.from).filter((a) => a.kind.startsWith("task."));
+  const nested = (await flushedProviderEvents(ctx, t)).filter((e) => e.payload?.parentToolUseId);
+  expect(turn.status === "ready", `turn ended ${turn.status}: ${turn.lastError}`);
+  expect(
+    tasks.some((a) => a.kind === "task.started"),
+    `no task.started activity (task activities: [${tasks.map((a) => a.kind).join(", ")}])`,
+  );
+  expect(nested.length > 0, "no subagent events reached T3 (did it run in the background?)");
+  expect(
+    !textAfter(t, turn.from).includes(MARKER),
+    `subagent text in the chat: ${quote(turn.text)}`,
+  );
+  return `${tasks.map((a) => a.kind).join(", ")}, ${nested.length} nested tool event(s); chat ${quote(turn.text)}`;
+}
+
 /**
- * A turn on model A, then a turn whose modelSelection names model B. T3's thread stream has no
- * provider model event, so the proof is the provider's own session.configured in T3's canonical
- * provider event log (needs the base dir: a server this script started).
+ * A turn on model A, then one on model B; proof is the provider's session.configured in T3's
+ * provider event log (the thread stream has no model event), so it needs a server this script started.
  */
 async function modelSwitch(ctx: Ctx): Promise<string> {
   if (!ctx.server.baseDir)
@@ -338,9 +357,8 @@ async function modelSwitch(ctx: Ctx): Promise<string> {
 }
 
 /**
- * A long turn; after its first text delta a second turn is queued, then the first is interrupted.
- * It must end early (no "2000") as cancelled, and a fresh turn afterwards must still answer.
- * T3 settles a cancelled turn as session "ready", so "cancelled" is read from T3's provider log.
+ * A long turn, a second queued after its first delta, then an interrupt: it ends early as cancelled
+ * (read from T3's provider log; the session shows "ready") and a fresh turn still answers.
  */
 async function cancel(ctx: Ctx): Promise<string> {
   const t = await openThread(ctx, "cancel");
@@ -602,9 +620,8 @@ async function waitTurnEnd(ctx: Ctx, t: Thread, from: number, ms: number): Promi
 }
 
 /**
- * Polls until the thread is idle and `done(text)` holds, or it has stayed idle 8s; answers every
- * approval that opens after `from` with `decision` on the way. Returns the final session, all
- * assistant text since `from`, and the session statuses seen (the lifecycle-guard evidence).
+ * Polls until the thread is idle and `done(text)` holds (or idle 8s), answering approvals with `decision`;
+ * returns the final session, the text since `from`, and the statuses seen.
  */
 async function settle(
   ctx: Ctx,
@@ -781,6 +798,7 @@ async function flushedProviderEvents(ctx: Ctx, t: Thread): Promise<Obj[]> {
   return providerEvents(ctx, t);
 }
 
+/** Predicates over orchestration events and sessions. */
 const isSessionSet = (e: Obj) => e.type === "thread.session-set";
 const isActivity = (e: Obj) => e.type === "thread.activity-appended";
 const isIdle = (s: Obj) => s.status !== "running" && s.status !== "starting";
@@ -860,6 +878,7 @@ function quote(text: string | undefined): string {
   return JSON.stringify(s.length > 80 ? `${s.slice(0, 77)}...` : s);
 }
 
+/** Resolves after `ms`. */
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Prints the matrix (rows x agents), counts, and log paths. */
@@ -1062,10 +1081,7 @@ async function connect(url: string, token: string, log: Log): Promise<Rpc> {
   return { call, stream, close: () => ws.close() };
 }
 
-/**
- * The orchestration events of one subscription, in arrival order, with a waiter:
- * waitFor(pred, from) resolves on the first matching item at index >= from.
- */
+/** One subscription's events in arrival order; waitFor(pred, from) resolves on the first match at index >= from. */
 function eventStream(interrupt: () => void): EventStream {
   const items: Obj[] = [];
   const waiters = new Set<() => void>();

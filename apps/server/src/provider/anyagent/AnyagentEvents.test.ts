@@ -100,6 +100,17 @@ describe("toProviderRuntimeEvents", () => {
     ]);
   });
 
+  it("a subagent's text, reasoning and message end (parent_tool_id set) -> nothing", () => {
+    const nested = (kind: EventKind) =>
+      toProviderRuntimeEvents(context({ textMessages: new Set(["m9"]) }), {
+        ...event(kind),
+        turn_info: { id: "t1", parent_tool_id: "task-1" },
+      });
+    expect(nested({ TextDelta: { message_id: "m9", text: "sub says" } })).toEqual([]);
+    expect(nested({ ReasoningDelta: { message_id: "m9", text: "sub thinks" } })).toEqual([]);
+    expect(nested({ MessageEnded: { message_id: "m9" } })).toEqual([]);
+  });
+
   it("UserMessage -> nothing (T3 records its own user messages)", () => {
     expect(map({ UserMessage: { message_id: "u1", text: "steer" } })).toEqual([]);
   });
@@ -144,6 +155,33 @@ describe("toProviderRuntimeEvents", () => {
   it("ToolUpdated repeated Pending snapshot -> item.updated, not a second item.started", () => {
     expect(map({ ToolUpdated: tool("Pending") }, { tools: new Set(["tool-1"]) })).toMatchObject([
       { type: "item.updated", payload: { status: "inProgress" } },
+    ]);
+  });
+
+  it("ToolUpdated Subagent -> its item events plus task.started first seen, task.completed when done", () => {
+    const sub = (status: "Running" | "Completed") => ({
+      ...tool(status),
+      kind: "Subagent" as const,
+      title: "list the files",
+      input: "None" as const,
+    });
+    const task = {
+      taskId: "tool-1",
+      taskType: "subagent",
+      toolUseId: "tool-1",
+      title: "list the files",
+    };
+    expect(map({ ToolUpdated: sub("Running") })).toMatchObject([
+      { eventId: "k:7:0", type: "item.started", payload: { itemType: "collab_agent_tool_call" } },
+      {
+        eventId: "k:7:1",
+        type: "task.started",
+        payload: { ...task, description: "list the files" },
+      },
+    ]);
+    expect(map({ ToolUpdated: sub("Completed") }, { tools: new Set(["tool-1"]) })).toMatchObject([
+      { type: "item.completed" },
+      { eventId: "k:7:2", type: "task.completed", payload: { ...task, status: "completed" } },
     ]);
   });
 
@@ -238,10 +276,14 @@ describe("toProviderRuntimeEvents", () => {
     expect(map(closed("gone"), { requests })).toEqual([]);
   });
 
-  it("SessionUpdated -> session.configured", () => {
+  it("SessionUpdated -> session.configured, plus thread.metadata.updated when the agent titled it", () => {
     const info = sessionInfo({ model: "opus", fast: true });
     expect(map({ SessionUpdated: info })).toMatchObject([
       { type: "session.configured", payload: { config: { model: "opus", fast: true } } },
+    ]);
+    expect(map({ SessionUpdated: { ...info, title: " Fix the build " } })).toMatchObject([
+      { type: "session.configured" },
+      { eventId: "k:7:1", type: "thread.metadata.updated", payload: { name: "Fix the build" } },
     ]);
   });
 
