@@ -231,7 +231,7 @@ export const makeAnyagentAdapter = (
         }
         // A plan turn switches `mode` to plan; the next default turn switches back to the open-time mode.
         const current = t.session.info.configuration.options.mode;
-        const mode = plan ? "plan" : current === "plan" ? t.openMode : undefined;
+        const mode = plan ? "plan" : current === "plan" ? defaultMode(t) : undefined;
         if (mode !== undefined && mode !== current) yield* setMode(t, mode);
         const { details: live, configuration } = t.session.info;
         const advertised = new Set(live.config_options.map((o) => o.id));
@@ -436,6 +436,14 @@ function onEvent(
     t.planProposed = false;
   }
   return out;
+}
+
+/** The mode a default turn returns to: the open-time one, or the first non-plan choice when the session opened in plan. */
+function defaultMode(t: Thread): ConfigValue | undefined {
+  if (t.openMode !== "plan") return t.openMode;
+  const mode = t.session.info.details.config_options.find((o) => o.id === "mode");
+  if (!mode || mode.kind === "Boolean") return undefined;
+  return mode.kind.Select.choices.find((c) => c.value !== "plan")?.value;
 }
 
 /** The permission request that follows the turn's plan (claude's ExitPlanMode), taken once; any other event: none. */

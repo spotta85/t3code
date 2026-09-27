@@ -344,6 +344,23 @@ describe("AnyagentAdapter over the mock binary", () => {
       ),
   );
 
+  it.live(
+    "a session opened in plan: a default turn switches to the first mode that is not plan",
+    () =>
+      run("plan-exit", (adapter, waitFor, seen) =>
+        Effect.gen(function* () {
+          yield* adapter.startSession({ threadId: A, cwd, runtimeMode: "approval-required" });
+          const { turnId } = yield* adapter.sendTurn({ threadId: A, input: "go" });
+          yield* waitFor((e) => e.type === "turn.started" && e.turnId === turnId);
+          expect(summary(seen()).slice(0, 3)).toEqual([
+            "session.started",
+            "session.configured:default",
+            "turn.started",
+          ]);
+        }),
+      ),
+  );
+
   it.live("a plan turn on an agent whose mode offers no plan fails typed", () =>
     run("turn", (adapter) =>
       Effect.gen(function* () {
