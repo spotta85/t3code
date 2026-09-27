@@ -118,7 +118,7 @@ export const makeAnyagentAdapter = (
         yield* stopSession(input.threadId);
         const cwd = input.cwd ?? config.cwd;
         const configure = selectedOptions(kind, input.modelSelection, openableOptions(details()));
-        const mcpServers = t3McpServers(kind, input.threadId, details());
+        const mcpServers = t3McpServers(input.threadId, details());
         const open = (token: string | undefined) =>
           call(input.threadId, "open", () =>
             use((runtime) =>
@@ -423,14 +423,7 @@ function snapshot(t: Thread): ProviderThreadSnapshot {
 }
 
 /** T3's `t3-code` MCP server for this thread, only for agents whose probe takes HTTP MCP servers. */
-function t3McpServers(
-  kind: ProviderDriverKind,
-  threadId: ThreadId,
-  details: AgentDetails | null,
-): McpServer[] {
-  // Not codex yet: anyagent passes the bearer in codex's argv, and codex ignores the server
-  // (gaps.md "Codex ignores declared MCP servers").
-  if (kind === "codex") return [];
+function t3McpServers(threadId: ThreadId, details: AgentDetails | null): McpServer[] {
   const mcp = McpProviderSession.readMcpProviderSession(threadId);
   if (!mcp || !details?.capabilities.mcp_transports.includes("Http")) return [];
   const headers = { Authorization: mcp.authorizationHeader };

@@ -33,6 +33,7 @@ import {
   type ToolInput,
   type ToolKind,
   type ToolUpdate,
+  type TurnUsage,
 } from "anyagent-ts";
 
 /** What the mapping needs besides the event; the adapter keeps it per session. */
@@ -94,7 +95,8 @@ const CHOICES: Record<PermissionChoice, ProviderApprovalOption> = {
  * | PlanUsageUpdated         | account.rate-limits.updated                               |
  * | Diagnostic               | runtime.warning; runtime.error at Error; none for an Info |
  * |                          | whose extensions carry a raw frame (unmapped wire frame)  |
- * | TurnEnded                | turn.completed, state from the stop reason                |
+ * | TurnEnded                | turn.completed, state from the stop reason, tokenUsage    |
+ * |                          | from its usage (claude, codex)                            |
  * | session error / end      | runtime.error + session.exited (sessionExitedEvents)      |
  * | (no source in anyagent)  | task.progress, turn.diff.updated, tool.denied,            |
  * |                          | tool.progress, model.rerouted: gaps.md rows               |
@@ -185,7 +187,13 @@ export function toProviderRuntimeEvents(
     return [{ ...base, type, payload: { message } }];
   }
   if ("TurnEnded" in k)
-    return [{ ...base, type: "turn.completed", payload: turnEnd(k.TurnEnded.stop) }];
+    return [
+      {
+        ...base,
+        type: "turn.completed",
+        payload: { ...turnEnd(k.TurnEnded.stop), ...tokenUsage(k.TurnEnded.usage) },
+      },
+    ];
   return []; // UserMessage, StatusChanged
 }
 
@@ -433,6 +441,21 @@ function turnEnd(stop: StopReason) {
     state: "completed",
     stopReason: stop.Completed.source === "Inferred" ? "inferred" : null,
   } as const;
+}
+
+/** The turn's token counts in T3's shape; nothing when the agent reported none. */
+function tokenUsage(usage: TurnUsage | null | undefined) {
+  if (!usage) return {};
+  return {
+    tokenUsage: {
+      usageScope: "main_agent",
+      usageStatus: "complete",
+      hasSubagents: false,
+      inputTokens: usage.input_tokens,
+      cachedInputTokens: usage.cached_input_tokens,
+      outputTokens: usage.output_tokens,
+    } as const,
+  };
 }
 
 /** One plan-quota window in T3's usage-limit shape. */

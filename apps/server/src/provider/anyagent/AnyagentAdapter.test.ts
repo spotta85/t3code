@@ -356,16 +356,6 @@ describe("AnyagentAdapter over the mock binary", () => {
           }),
         { mcpTransports: ["Http"] },
       );
-      // Codex takes Http but gets nothing yet: anyagent would put the bearer in its argv (gaps.md).
-      yield* run(
-        "turn",
-        (adapter, _waitFor, _seen, opened) =>
-          Effect.gen(function* () {
-            yield* startBoth(adapter);
-            expect(opened().map((o) => o.mcp_servers)).toEqual([undefined, undefined]);
-          }),
-        { mcpTransports: ["Http"], kind: "codex" },
-      );
     }).pipe(Effect.ensuring(Effect.sync(() => McpProviderSession.clearMcpProviderSession(A)))),
   );
 });

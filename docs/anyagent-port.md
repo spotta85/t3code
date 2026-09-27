@@ -57,7 +57,7 @@ binary), and the live check against real agents:
 | Skills picker                               | Workspace skills listed                                                                                                                                                                          | Empty                                                                                                                        |
 | Session instructions                        | T3 added runtime info, PR linking and codex's mode prompt to every session                                                                                                                       | None sent                                                                                                                    |
 | Antigravity                                 | T3 ran its managed install                                                                                                                                                                       | The managed install still downloads but is unused: anyagent runs its own `agy`                                               |
-| T3 MCP tools (browser, devices, PR linking) | Every agent                                                                                                                                                                                      | claude only; codex, opencode and antigravity run without them                                                                |
+| T3 MCP tools (browser, devices, PR linking) | Every agent                                                                                                                                                                                      | claude and codex; opencode and antigravity run without them                                                                  |
 
 Each row has a matching gaps.md row in the anyagent repo.
 
@@ -96,7 +96,6 @@ turn with a typed error.
 
 Browser preview, devices and pull-request linking reach the agent through T3's own MCP server.
 The adapter declares it at `open` (HTTP, with the thread's bearer header) for agents whose probe
-takes HTTP MCP servers; claude connects to it. Codex is skipped for now: anyagent would put the
-bearer token in codex's command line, and `codex app-server` ignores the server anyway (gaps row
-"Codex ignores declared MCP servers"). OpenCode and Antigravity refuse client-declared MCP servers
+takes HTTP MCP servers; claude and codex connect to it (codex gets the bearer token through an
+environment variable, not its command line). OpenCode and Antigravity refuse client-declared MCP servers
 in anyagent, so the adapter does not declare it for them either.

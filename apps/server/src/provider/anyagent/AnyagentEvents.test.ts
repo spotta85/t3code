@@ -369,6 +369,23 @@ describe("toProviderRuntimeEvents", () => {
         payload: { state: "completed", stopReason: null },
       },
     ]);
+    const usage = { input_tokens: 120, cached_input_tokens: 100, output_tokens: 7 };
+    expect(
+      map({ TurnEnded: { stop: { Completed: { source: "Protocol" } }, background: [], usage } }),
+    ).toMatchObject([
+      {
+        payload: {
+          tokenUsage: {
+            usageScope: "main_agent",
+            usageStatus: "complete",
+            hasSubagents: false,
+            inputTokens: 120,
+            cachedInputTokens: 100,
+            outputTokens: 7,
+          },
+        },
+      },
+    ]);
     expect(ended({ Completed: { source: "Inferred" } })).toMatchObject([
       { payload: { state: "completed", stopReason: "inferred" } },
     ]);
