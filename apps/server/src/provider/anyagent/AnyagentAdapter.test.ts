@@ -90,6 +90,31 @@ describe("AnyagentAdapter over the mock binary", () => {
     ),
   );
 
+  it.live("interrupt with a finished turn's id leaves the running turn alone", () =>
+    run("chatter", (adapter, waitFor, seen) =>
+      Effect.gen(function* () {
+        yield* adapter.startSession({ threadId: A, cwd, runtimeMode: "approval-required" });
+        const send = (input: string) =>
+          adapter.sendTurn({ threadId: A, input }).pipe(Effect.map((r) => r.turnId));
+        const first = yield* send("one");
+        yield* waitFor((e) => e.type === "turn.completed" && e.turnId === first);
+        const second = yield* send("two");
+        yield* waitFor((e) => e.type === "turn.completed" && e.turnId === second);
+        // The script has no third turn: it runs until cancelled.
+        const running = yield* send("three");
+        yield* waitFor((e) => e.type === "turn.started" && e.turnId === running);
+
+        yield* adapter.interruptTurn(A, first);
+        yield* Effect.sleep("100 millis");
+        expect(seen().some((e) => e.type === "turn.completed" && e.turnId === running)).toBe(false);
+        yield* adapter.interruptTurn(A);
+        expect(
+          yield* waitFor((e) => e.type === "turn.completed" && e.turnId === running),
+        ).toMatchObject({ payload: { state: "cancelled" } });
+      }),
+    ),
+  );
+
   it.live("stop closes the session: session.exited, and the thread is gone", () =>
     run("turn", (adapter, waitFor) =>
       Effect.gen(function* () {
@@ -192,6 +217,33 @@ describe("AnyagentAdapter over the mock binary", () => {
     ),
   );
 
+  it.live("a rollback the agent refuses fails typed with its reason and keeps the turns", () =>
+    run("rollback-refused", (adapter, waitFor) =>
+      Effect.gen(function* () {
+        yield* adapter.startSession({ threadId: A, cwd, runtimeMode: "approval-required" });
+        const { turnId } = yield* adapter.sendTurn({ threadId: A, input: "hi" });
+        yield* waitFor((e) => e.type === "turn.completed");
+        const error = yield* Effect.flip(adapter.rollbackThread(A, 1));
+        expect(error).toMatchObject({ _tag: "ProviderAdapterRequestError" });
+        expect(error.message).toContain("nothing to rewind past the compaction");
+        expect((yield* adapter.readThread(A)).turns.map((t) => t.id)).toEqual([turnId]);
+      }),
+    ),
+  );
+
+  it.live("runtime modes open as Ask, AcceptEdits (auto-accept-edits), AutoApprove", () =>
+    run("turn", (adapter, _waitFor, _seen, opened) =>
+      Effect.gen(function* () {
+        const modes = ["approval-required", "auto-accept-edits", "full-access"] as const;
+        for (const runtimeMode of modes) {
+          yield* adapter.startSession({ threadId: A, cwd, runtimeMode });
+        }
+        const expected = ["Ask", "AcceptEdits", "AutoApprove"];
+        expect(opened().map((o) => o.permission_mode)).toEqual(expected);
+      }),
+    ),
+  );
+
   it.live("an attachment that cannot be resolved fails the turn instead of being dropped", () =>
     run("turn", (adapter, _waitFor, seen) =>
       Effect.gen(function* () {
@@ -226,7 +278,40 @@ describe("AnyagentAdapter over the mock binary", () => {
     ),
   );
 
-  it.live("plan mode fails typed: anyagent has no plan mode (gaps.md)", () =>
+  it.live("a plan turn switches mode to plan first; the next default turn switches back", () =>
+    run("plan", (adapter, waitFor, seen) =>
+      Effect.gen(function* () {
+        yield* adapter.startSession({ threadId: A, cwd, runtimeMode: "approval-required" });
+        const plan = yield* adapter.sendTurn({
+          threadId: A,
+          input: "plan",
+          interactionMode: "plan",
+        });
+        yield* waitFor((e) => e.type === "turn.completed" && e.turnId === plan.turnId);
+        const next = yield* adapter.sendTurn({ threadId: A, input: "go" });
+        yield* waitFor((e) => e.type === "turn.completed" && e.turnId === next.turnId);
+
+        expect(summary(seen())).toEqual([
+          "session.started",
+          "session.configured:plan",
+          "turn.started",
+          "turn.proposed.completed",
+          "turn.completed:completed",
+          "session.configured:default",
+          "turn.started",
+          "content.delta:Done.",
+          "item.completed:assistant_message",
+          "turn.completed:completed",
+        ]);
+        expect(seen().find((e) => e.type === "turn.proposed.completed")).toMatchObject({
+          turnId: plan.turnId,
+          payload: { planMarkdown: "1. Add a README" },
+        });
+      }),
+    ),
+  );
+
+  it.live("a plan turn on an agent whose mode offers no plan fails typed", () =>
     run("turn", (adapter) =>
       Effect.gen(function* () {
         yield* adapter.startSession({ threadId: A, cwd, runtimeMode: "approval-required" });
@@ -459,10 +544,12 @@ function recordingOpens(runtime: Runtime, opens: OpenOptions[]): Runtime {
   });
 }
 
-/** Each event as `type`, plus the detail a test pins: delta text, item type, decision, turn state. */
+/** Each event as `type`, plus the detail a test pins: delta text, item type, decision, turn state, mode. */
 function summary(events: Seen): string[] {
   return events.map((e) => {
     switch (e.type) {
+      case "session.configured":
+        return `${e.type}:${String(e.payload.config.mode)}`;
       case "content.delta":
         return `${e.type}:${e.payload.delta}`;
       case "item.completed":

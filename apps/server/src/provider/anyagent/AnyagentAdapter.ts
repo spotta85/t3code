@@ -17,9 +17,11 @@ import {
 import {
   type AgentDetails,
   AnyagentError,
+  type ConfigValue,
   type Delivery,
   type Event,
   type McpServer,
+  type PermissionMode,
   type Question,
   type QuestionAnswer,
   type Session,
@@ -108,6 +110,29 @@ export const makeAnyagentAdapter = (
         );
       });
 
+    /** Sets the session's `mode` and waits until its info shows it; a rejected change never does, so fail after 10 s. */
+    const setMode = (t: Thread, mode: ConfigValue) =>
+      call(t.threadId, "configure", () => t.session.configure("mode", mode)).pipe(
+        Effect.andThen(
+          Effect.gen(function* () {
+            while (t.session.info.configuration.options.mode !== mode) {
+              yield* Effect.sleep("20 millis");
+            }
+          }),
+        ),
+        Effect.timeoutOrElse({
+          duration: "10 seconds",
+          orElse: () =>
+            Effect.fail(
+              new ProviderAdapterRequestError({
+                provider: kind,
+                method: "configure",
+                detail: `The agent did not apply mode '${mode}'.`,
+              }),
+            ),
+        }),
+      );
+
     const startSession: Adapter["startSession"] = (input) =>
       Effect.gen(function* () {
         // A cursor from T3's pre-anyagent adapters (an object) cannot resume: open fresh and say so.
@@ -124,7 +149,7 @@ export const makeAnyagentAdapter = (
             use((runtime) =>
               runtime.open(agent, {
                 dir: cwd,
-                permission_mode: input.runtimeMode === "full-access" ? "AutoApprove" : "Ask",
+                permission_mode: PERMISSION_MODE[input.runtimeMode],
                 ...(token !== undefined ? { resume: token } : {}),
                 ...(mcpServers.length > 0 ? { mcp_servers: mcpServers } : {}),
                 ...(Object.keys(configure).length > 0 ? { configure } : {}),
@@ -146,6 +171,7 @@ export const makeAnyagentAdapter = (
           session,
           key: NodeCrypto.randomUUID(),
           runtimeMode: input.runtimeMode,
+          openMode: session.info.configuration.options.mode,
           cwd,
           createdAt: now,
           updatedAt: now,
@@ -168,13 +194,18 @@ export const makeAnyagentAdapter = (
     const sendTurn: Adapter["sendTurn"] = (input) =>
       Effect.gen(function* () {
         const t = yield* requireThread(input.threadId);
-        if (input.interactionMode === "plan") {
+        const plan = input.interactionMode === "plan";
+        if (plan && !offersPlan(t)) {
           return yield* new ProviderAdapterValidationError({
             provider: kind,
             operation: "sendTurn",
-            issue: "Plan mode is not available through anyagent.",
+            issue: "Plan mode is not available for this agent.",
           });
         }
+        // A plan turn switches `mode` to plan; the next default turn switches back to the open-time mode.
+        const current = t.session.info.configuration.options.mode;
+        const mode = plan ? "plan" : current === "plan" ? t.openMode : undefined;
+        if (mode !== undefined && mode !== current) yield* setMode(t, mode);
         const { details: live, configuration } = t.session.info;
         const advertised = new Set(live.config_options.map((o) => o.id));
         for (const [id, value] of Object.entries(
@@ -201,9 +232,13 @@ export const makeAnyagentAdapter = (
         return { threadId: t.threadId, turnId: deliveredTurnId(t, delivery), ...resumeCursor(t) };
       });
 
-    const interruptTurn: Adapter["interruptTurn"] = (threadId) =>
+    const interruptTurn: Adapter["interruptTurn"] = (threadId, turnId) =>
       requireThread(threadId).pipe(
-        Effect.flatMap((t) => call(threadId, "cancel", () => t.session.cancel())),
+        Effect.flatMap((t) => {
+          // Only that turn when T3 names one we know, so a stale interrupt cannot stop the next turn.
+          const turn = [...t.turns].find(([, id]) => id === turnId)?.[0];
+          return call(threadId, "cancel", () => t.session.cancel(false, turn));
+        }),
       );
 
     const respondToRequest: Adapter["respondToRequest"] = (threadId, requestId, decision) =>
@@ -309,6 +344,8 @@ interface Thread {
   /** Unique per session: prefixes T3 turn and event ids. */
   readonly key: string;
   readonly runtimeMode: ProviderSession["runtimeMode"];
+  /** The session's `mode` right after open; a default turn after a plan turn returns to it. */
+  readonly openMode: ConfigValue | undefined;
   readonly cwd: string;
   readonly createdAt: string;
   updatedAt: string;
@@ -323,6 +360,14 @@ interface Thread {
 }
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+
+/** anyagent's permission mode for each T3 runtime mode. */
+const PERMISSION_MODE: Record<ProviderSession["runtimeMode"], PermissionMode> = {
+  "approval-required": "Ask",
+  "auto-accept-edits": "AcceptEdits",
+  auto: "Ask",
+  "full-access": "AutoApprove",
+};
 
 /** Maps one event for T3, then updates the thread's bookkeeping from it. */
 function onEvent(
@@ -379,6 +424,13 @@ function deliveredTurnId(t: Thread, delivery: Delivery): TurnId {
   const turnId = TurnId.make(`${t.key}:${delivery.prompt_id}`);
   if ("Started" in k) t.turns.set(k.Started.turn_id, turnId);
   return turnId;
+}
+
+/** Whether the session's live `mode` option offers `plan`. */
+function offersPlan(t: Thread): boolean {
+  const mode = t.session.info.details.config_options.find((o) => o.id === "mode");
+  if (!mode?.live || mode.kind === "Boolean") return false;
+  return mode.kind.Select.choices.some((c) => c.value === "plan");
 }
 
 /** T3's answer to one question (option labels or free text) in anyagent's shape: choice ids when every value names a choice, else text. */

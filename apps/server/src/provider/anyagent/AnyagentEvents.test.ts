@@ -185,6 +185,33 @@ describe("toProviderRuntimeEvents", () => {
     ]);
   });
 
+  it("ToolUpdated Denied -> item.completed declined, plus tool.denied with its output as reason", () => {
+    const denied = {
+      ...tool("Running"),
+      status: "Denied" as const,
+      output: "Permission to use Bash has been denied.",
+      raw: { name: "Bash", input: { command: "cargo test" } },
+    };
+    expect(map({ ToolUpdated: denied }, { tools: new Set(["tool-1"]) })).toMatchObject([
+      {
+        eventId: "k:7:0",
+        type: "item.completed",
+        itemId: "tool-1",
+        payload: { status: "declined" },
+      },
+      {
+        ...base,
+        eventId: "k:7:3",
+        type: "tool.denied",
+        payload: {
+          toolName: "Bash",
+          toolUseId: "tool-1",
+          reason: "Permission to use Bash has been denied.",
+        },
+      },
+    ]);
+  });
+
   it("ToolOutputDelta -> command_output content.delta", () => {
     expect(map({ ToolOutputDelta: { tool_id: "tool-1", text: "ok\n" } })).toMatchObject([
       {
@@ -211,6 +238,17 @@ describe("toProviderRuntimeEvents", () => {
             { step: "test", status: "pending" },
           ],
         },
+      },
+    ]);
+  });
+
+  it("PlanProposed -> turn.proposed.completed with the plan", () => {
+    expect(map({ PlanProposed: { markdown: "1. Add a README\n" } })).toEqual([
+      {
+        ...base,
+        eventId: "k:7:0",
+        type: "turn.proposed.completed",
+        payload: { planMarkdown: "1. Add a README" },
       },
     ]);
   });

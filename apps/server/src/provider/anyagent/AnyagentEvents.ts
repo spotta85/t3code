@@ -83,8 +83,10 @@ const CHOICES: Record<PermissionChoice, ProviderApprovalOption> = {
  * | UserMessage              | none: T3 records its own user messages                    |
  * | ToolUpdated              | item.started (first seen), item.updated, item.completed (done) |
  * | ToolUpdated Subagent     | also task.started (first seen), task.completed (done)     |
+ * | ToolUpdated Denied       | also tool.denied, the reason from its output              |
  * | ToolOutputDelta          | content.delta (command_output)                            |
  * | PlanUpdated              | turn.plan.updated                                         |
+ * | PlanProposed             | turn.proposed.completed                                   |
  * | RequestOpened Permission | request.opened, options = offered choices as T3 decisions |
  * | RequestOpened Question   | user-input.requested                                      |
  * | RequestClosed            | request.resolved / user-input.resolved, with T3's answer  |
@@ -98,8 +100,8 @@ const CHOICES: Record<PermissionChoice, ProviderApprovalOption> = {
  * | TurnEnded                | turn.completed, state from the stop reason, tokenUsage    |
  * |                          | from its usage (claude, codex)                            |
  * | session error / end      | runtime.error + session.exited (sessionExitedEvents)      |
- * | (no source in anyagent)  | task.progress, turn.diff.updated, tool.denied,            |
- * |                          | tool.progress, model.rerouted: gaps.md rows               |
+ * | (no source in anyagent)  | task.progress, turn.diff.updated, tool.progress,          |
+ * |                          | model.rerouted: gaps.md rows                              |
  */
 export function toProviderRuntimeEvents(
   ctx: EventContext,
@@ -144,7 +146,9 @@ export function toProviderRuntimeEvents(
     const tool = k.ToolUpdated;
     const seen = ctx.tools.has(tool.id);
     const item = toolEvent(base, tool, seen, ev.turn_info?.parent_tool_id);
-    return tool.kind === "Subagent" ? [item, ...taskEvents(base, tool, seen)] : [item];
+    const tasks = tool.kind === "Subagent" ? taskEvents(base, tool, seen) : [];
+    const denied = tool.status === "Denied" ? [toolDenied(extra(base, 3), tool)] : [];
+    return [item, ...tasks, ...denied];
   }
   if ("PlanUpdated" in k) {
     const plan = k.PlanUpdated.entries.map((e) => ({
@@ -152,6 +156,12 @@ export function toProviderRuntimeEvents(
       status: PLAN_STATUS[e.status],
     }));
     return [{ ...base, type: "turn.plan.updated", payload: { plan } }];
+  }
+  if ("PlanProposed" in k) {
+    const planMarkdown = k.PlanProposed.markdown.trim();
+    return planMarkdown
+      ? [{ ...base, type: "turn.proposed.completed", payload: { planMarkdown } }]
+      : [];
   }
   if ("RequestOpened" in k) return [requestOpened(base, k.RequestOpened)];
   if ("RequestClosed" in k)
@@ -285,13 +295,19 @@ const PLAN_STATUS = {
   InProgress: "inProgress",
   Completed: "completed",
 } as const;
-const TASK_STATUS = { Completed: "completed", Failed: "failed", Cancelled: "stopped" } as const;
+const TASK_STATUS = {
+  Completed: "completed",
+  Failed: "failed",
+  Cancelled: "stopped",
+  Denied: "failed",
+} as const;
 const TOOL_STATUS = {
   Pending: "inProgress",
   Running: "inProgress",
   Completed: "completed",
   Failed: "failed",
   Cancelled: "failed",
+  Denied: "declined",
 } as const;
 
 /** One streamed chunk of a message or a command's output. */
@@ -354,6 +370,20 @@ function taskEvents(base: Base, tool: ToolUpdate, seen: boolean): ProviderRuntim
     out.push({ ...extra(base, 2), type: "task.completed", payload: { ...task, status } });
   }
   return out;
+}
+
+/** A tool the agent's rules or mode refused without asking, as T3's tool.denied; the reason is its output. */
+function toolDenied(base: Base, tool: ToolUpdate): ProviderRuntimeEvent {
+  const reason = tool.output?.trim();
+  return {
+    ...base,
+    type: "tool.denied",
+    payload: {
+      toolName: tool.raw?.name.trim() || tool.title.trim(),
+      toolUseId: tool.id,
+      ...(reason ? { reason } : {}),
+    },
+  };
 }
 
 /** `base` for the i-th extra T3 event one anyagent event maps to. */
