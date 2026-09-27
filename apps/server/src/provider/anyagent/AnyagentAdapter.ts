@@ -126,7 +126,10 @@ export const makeAnyagentAdapter = (
         );
       });
 
-    /** Denies the agent's exit-plan request with upstream T3's message; false when it offers no deny or the answer fails. */
+    /**
+     * Denies the agent's exit-plan request with upstream T3's message;
+     * false when it offers no deny or the answer fails.
+     */
     const declined = (t: Thread, request: PermissionRequest) => {
       if (!request.options.includes("DenyOnce")) return Effect.succeed(false);
       return call(t.threadId, "answer", () =>

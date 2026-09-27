@@ -57,7 +57,7 @@ export const makeAnyagentTextGeneration = (
 
     /**
      * One reply for `prompt` in `cwd`, with the images among `attachments`, decoded with `schema`; every failure is a
-     * TextGenerationError. An agent that takes an output schema replies with the JSON alone; others bury it in text.
+     * TextGenerationError. The JSON is dug out of the text, so a fenced or prose-wrapped reply still decodes.
      */
     const runJson = <S extends Schema.Top>(
       operation: Operation,
@@ -92,9 +92,7 @@ export const makeAnyagentTextGeneration = (
           orElse: () => Effect.fail(failure(operation, "anyagent generate timed out.")),
         }),
         Effect.flatMap((text) =>
-          Schema.decodeEffect(Schema.fromJsonString(outputSchema))(
-            schema ? text : extractJsonObject(text.trim()),
-          ),
+          Schema.decodeEffect(Schema.fromJsonString(outputSchema))(extractJsonObject(text.trim())),
         ),
         Effect.catchTag("SchemaError", (cause) =>
           Effect.fail(failure(operation, "The agent returned invalid structured output.", cause)),
