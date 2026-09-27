@@ -54,6 +54,7 @@ import type { ProviderAdapterShape, ProviderThreadSnapshot } from "../Services/P
 import {
   freshSessionWarning,
   type OpenRequest,
+  permissionAnswer,
   permissionChoice,
   PRE_PORT_RESUME_WARNING,
   RESUME_FAILED_WARNING,
@@ -285,8 +286,8 @@ export const makeAnyagentAdapter = (
           return yield* unknownRequest(kind, "approval", requestId);
         }
         t.requests.set(requestId, { ...open, decision });
-        const choice = permissionChoice(decision, open.request.Permission.options);
-        yield* call(threadId, "answer", () => t.session.answer(requestId, { Permission: choice }));
+        const answer = permissionAnswer(decision, open.request.Permission.options);
+        yield* call(threadId, "answer", () => t.session.answer(requestId, answer));
       });
 
     const respondToUserInput: Adapter["respondToUserInput"] = (threadId, requestId, answers) =>

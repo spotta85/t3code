@@ -129,6 +129,21 @@ describe("AnyagentAdapter over the mock binary", () => {
     ),
   );
 
+  it.live("a cancel decision withdraws the request with anyagent's Cancel, not a deny", () =>
+    run("turn", (adapter, waitFor, _seen, _opened, answered) =>
+      Effect.gen(function* () {
+        yield* adapter.startSession({ threadId: A, cwd, runtimeMode: "approval-required" });
+        yield* adapter.sendTurn({ threadId: A, input: "hi" });
+        yield* waitFor((e) => e.type === "request.opened");
+        yield* adapter.respondToRequest(A, ApprovalRequestId.make("r1"), "cancel");
+        expect(yield* waitFor((e) => e.type === "request.resolved")).toMatchObject({
+          payload: { decision: "cancel" },
+        });
+        expect(answered()).toEqual([{ request: "r1", answer: "Cancel" }]);
+      }),
+    ),
+  );
+
   it.live("interrupt ends the turn cancelled and resolves the open request", () =>
     run("turn", (adapter, waitFor) =>
       Effect.gen(function* () {

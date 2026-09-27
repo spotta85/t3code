@@ -23,6 +23,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import {
   AnyagentError,
+  type Answer,
   type Event,
   type EventKind,
   type PermissionChoice,
@@ -278,6 +279,14 @@ export function sessionExitedEvents(
       payload: { reason, exitKind: "error", recoverable: kind === "AuthRequired" },
     },
   ];
+}
+
+/** T3's decision as anyagent's answer: cancel withdraws the request (claude and codex approvals end the turn too). */
+export function permissionAnswer(
+  decision: ProviderApprovalDecision,
+  offered: ReadonlyArray<PermissionChoice>,
+): Answer {
+  return decision === "cancel" ? "Cancel" : { Permission: permissionChoice(decision, offered) };
 }
 
 /** The offered choice that carries T3's decision; "always" falls back to once when not offered. */
