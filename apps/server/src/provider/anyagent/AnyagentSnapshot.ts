@@ -11,6 +11,7 @@ import type {
   ProviderOptionDescriptor,
   ServerProviderAuth,
   ServerProviderModel,
+  ServerProviderSkill,
   ServerProviderSlashCommand,
   ServerProviderUsageLimits,
 } from "@t3tools/contracts";
@@ -60,6 +61,7 @@ export function toServerProviderSnapshot(
 ): ServerProviderDraft {
   const details = probe && "details" in probe ? probe.details : undefined;
   const options = details?.config_options ?? [];
+  const commands = details?.commands ?? [];
   const capabilities = createModelCapabilities({
     optionDescriptors: optionDescriptors(kind, options),
   });
@@ -77,7 +79,8 @@ export function toServerProviderSnapshot(
       settings.customModels,
       capabilities,
     ),
-    slashCommands: (details?.commands ?? []).map(slashCommand),
+    slashCommands: commands.filter((c) => !skill(c)).map(slashCommand),
+    skills: commands.flatMap((c) => skill(c) ?? []),
     probe: probeResult(settings, probe, checkedAt),
   });
 }
@@ -281,6 +284,23 @@ function slashCommand(command: AgentDetails["commands"][number]): ServerProvider
     name: command.name,
     ...(nonEmpty(command.description) ? { description: command.description.trim() } : {}),
     ...(nonEmpty(command.input_hint) ? { input: { hint: command.input_hint.trim() } } : {}),
+  };
+}
+
+/**
+ * A skill command that names its SKILL.md (codex) as T3's skill, for the `$` picker. claude names no path: its skills
+ * stay slash commands, which claude runs as `/name`.
+ */
+function skill(command: AgentDetails["commands"][number]): ServerProviderSkill | undefined {
+  const source = typeof command.source === "object" ? command.source.Skill : undefined;
+  const path = source?.path?.trim();
+  if (!path) return undefined;
+  return {
+    name: command.name,
+    path,
+    enabled: true,
+    ...(nonEmpty(command.description) ? { description: command.description.trim() } : {}),
+    ...(nonEmpty(source?.scope) ? { scope: source.scope.trim() } : {}),
   };
 }
 

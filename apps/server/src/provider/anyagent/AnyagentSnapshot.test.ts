@@ -134,6 +134,38 @@ describe("toServerProviderSnapshot", () => {
     expect(() => decode(stamp(snapshot))).not.toThrow();
   });
 
+  it("skill commands with a SKILL.md are skills; claude's (no path) stay slash commands", () => {
+    const commands: AgentDetails["commands"] = [
+      { name: "review", description: "Review a diff" },
+      {
+        name: "deploy",
+        description: " Ship it ",
+        source: { Skill: { path: "/w/.agents/skills/deploy/SKILL.md", scope: "repo" } },
+      },
+      { name: "notes", description: "", source: { Skill: { path: " /h/notes/SKILL.md " } } },
+      { name: "pdf", description: "Read PDFs", source: { Skill: { scope: "user" } } },
+      { name: "init", description: "", source: "Builtin" },
+    ];
+    const snapshot = toServerProviderSnapshot(
+      KIND,
+      { details: { ...claude, commands } },
+      settings,
+      AT,
+    );
+    expect(snapshot.skills).toEqual([
+      {
+        name: "deploy",
+        path: "/w/.agents/skills/deploy/SKILL.md",
+        enabled: true,
+        description: "Ship it",
+        scope: "repo",
+      },
+      { name: "notes", path: "/h/notes/SKILL.md", enabled: true },
+    ]);
+    expect(snapshot.slashCommands.map((c) => c.name)).toEqual(["review", "pdf", "init"]);
+    expect(() => decode(stamp(snapshot))).not.toThrow();
+  });
+
   it("a logged-out agent is an error with its login command", () => {
     const snapshot = toServerProviderSnapshot(KIND, { details: loggedOut }, settings, AT);
     expect(snapshot).toMatchObject({

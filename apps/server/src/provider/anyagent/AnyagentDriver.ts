@@ -189,6 +189,9 @@ export const makeAnyagentDriver = (
         accentColor,
         enabled,
         snapshot,
+        // A probe in the workspace: its slash commands and skills (project skills included).
+        snapshotForCwd: (cwd) =>
+          Effect.promise(() => probeAgent(use, launch, cwd)).pipe(Effect.flatMap(snapshotOf)),
         adapter: yield* makeAnyagentAdapter(kind, launch, () => latest),
         textGeneration: yield* makeAnyagentTextGeneration(kind, launch, () => latest),
       } satisfies ProviderInstance;
@@ -228,13 +231,18 @@ export function launchOf(
 const ANYAGENT_BIN_HINT =
   " (anyagent binary not found: set ANYAGENT_BIN to it, see docs/anyagent-port.md)";
 
-/** Probes the agent, then reads its plan usage. A failure is a result; a missing agent carries an install hint. */
+/**
+ * Probes the agent (in `dir` for a workspace), then reads its plan usage (not for a workspace). A failure is a result;
+ * a missing agent carries an install hint.
+ */
 async function probeAgent(
   use: AnyagentRuntime["Service"]["use"],
   { agent: ref, options }: Launch,
+  dir?: string,
 ): Promise<AgentProbe> {
   try {
-    const details = await use((runtime) => runtime.probe(ref, options));
+    const details = await use((runtime) => runtime.probe(ref, dir ? { ...options, dir } : options));
+    if (dir) return { details };
     const usage = await use((runtime) => runtime.planUsage(ref, options)).catch(asError);
     return { details, usage };
   } catch (cause) {

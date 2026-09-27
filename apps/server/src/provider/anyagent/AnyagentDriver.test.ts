@@ -227,6 +227,42 @@ describe("AnyagentDriver over the mock binary", () => {
     );
   });
 
+  it.live("a workspace snapshot probes in that directory: its skills fill the picker", () => {
+    const probes: Array<Obj> = [];
+    let usageReads = 0;
+    const skill = { Skill: { path: "/w/.agents/skills/deploy/SKILL.md", scope: "repo" } };
+    const runtime = {
+      probe: async (_agent: string, opts: Obj) => {
+        probes.push(opts);
+        const commands = opts.dir ? [{ name: "deploy", description: "", source: skill }] : [];
+        return { ...details(), commands };
+      },
+      planUsage: async () => {
+        usageReads++;
+        return Promise.reject(new Error("no plan usage"));
+      },
+    } as unknown as Runtime;
+    const fake = Layer.succeed(AnyagentRuntime, { use: (f) => f(runtime) });
+    return withRuntimeLayer(fake, () =>
+      Effect.gen(function* () {
+        const instance = yield* create(codex, "codex", yield* Scope.make());
+        expect((yield* instance.snapshot.getSnapshot).skills).toEqual([]);
+        const workspace = yield* instance.snapshotForCwd!("/w");
+        expect(workspace.skills).toEqual([
+          {
+            name: "deploy",
+            path: "/w/.agents/skills/deploy/SKILL.md",
+            enabled: true,
+            scope: "repo",
+          },
+        ]);
+        expect(probes.map((o) => o.dir)).toEqual([undefined, "/w"]);
+        // Plan usage is the machine's: the workspace probe does not read it again.
+        expect(usageReads).toBe(1);
+      }),
+    );
+  });
+
   it("launchOf: each setting becomes its launch option; default settings give the plain agent id", () => {
     const defaults = { enabled: true, binaryPath: "codex", customModels: [] };
     expect(launchOf("codex", defaults, "codex", [])).toEqual({ agent: "codex", options: {} });
@@ -481,6 +517,16 @@ describe("AnyagentDriver over the mock binary", () => {
 // ---------------------------------------------------------------------------
 
 type Obj = Record<string, unknown>;
+
+/** Probe details with no options and no commands. */
+function details(): AgentDetails {
+  return {
+    auth: "Unknown",
+    capabilities: { features: [], mcp_transports: [] },
+    config_options: [],
+    commands: [],
+  };
+}
 
 /** Runs `body` with every service the driver needs, over `anyagent serve --mock <script>`. */
 function withRuntime<A, E>(script: string, body: () => Effect.Effect<A, E, Env>) {
