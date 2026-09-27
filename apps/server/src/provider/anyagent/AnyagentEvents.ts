@@ -98,7 +98,7 @@ const CHOICES: Record<PermissionChoice, ProviderApprovalOption> = {
  * | Diagnostic               | runtime.warning; runtime.error at Error; none for an Info |
  * |                          | whose extensions carry a raw frame (unmapped wire frame)  |
  * | TurnEnded                | turn.completed, state from the stop reason, tokenUsage    |
- * |                          | from its usage (claude, codex)                            |
+ * |                          | from its usage (claude, codex, opencode, pi, antigravity) |
  * | session error / end      | runtime.error + session.exited (sessionExitedEvents)      |
  * | (no source in anyagent)  | task.progress, turn.diff.updated, tool.progress,          |
  * |                          | model.rerouted: gaps.md rows                              |

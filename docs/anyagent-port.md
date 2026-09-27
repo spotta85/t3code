@@ -49,15 +49,17 @@ binary), and the live check against real agents:
 
 ## What changes for you
 
-| Area                                        | Before                                                                                                                                                                                           | Now                                                                                                                          |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| Provider settings                           | `binaryPath`, environment, `launchArgs`, codex home paths, claude `autoCompactWindow`, cursor `apiEndpoint`, antigravity `apiKey`/`authMethod`/GCP fields, opencode `serverUrl`/`serverPassword` | Ignored. anyagent runs the agent it finds on `PATH` with the server's environment. `binaryPath` only feeds the Update button |
-| Plan mode                                   | Plan toggle in the composer                                                                                                                                                                      | Hidden; a plan turn fails                                                                                                    |
-| Accept-edits mode                           | Edits run without asking                                                                                                                                                                         | Same as Ask: edits prompt too                                                                                                |
-| Skills picker                               | Workspace skills listed                                                                                                                                                                          | Empty                                                                                                                        |
-| Session instructions                        | T3 added runtime info, PR linking and codex's mode prompt to every session                                                                                                                       | None sent                                                                                                                    |
-| Antigravity                                 | T3 ran its managed install                                                                                                                                                                       | The managed install still downloads but is unused: anyagent runs its own `agy`                                               |
-| T3 MCP tools (browser, devices, PR linking) | Every agent                                                                                                                                                                                      | claude and codex; opencode and antigravity run without them                                                                  |
+| Area                                               | Before                                                                                                                                                                                           | Now                                                                                                                          |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| Provider settings                                  | `binaryPath`, environment, `launchArgs`, codex home paths, claude `autoCompactWindow`, cursor `apiEndpoint`, antigravity `apiKey`/`authMethod`/GCP fields, opencode `serverUrl`/`serverPassword` | Ignored. anyagent runs the agent it finds on `PATH` with the server's environment. `binaryPath` only feeds the Update button |
+| Plan mode                                          | Plan toggle in the composer                                                                                                                                                                      | Same where the agent's `mode` offers `plan` (claude, codex); hidden elsewhere                                                |
+| Accept-edits mode                                  | Edits run without asking                                                                                                                                                                         | Same (anyagent's `AcceptEdits`)                                                                                              |
+| Skills picker                                      | Workspace skills listed                                                                                                                                                                          | Empty                                                                                                                        |
+| Session instructions                               | T3 added runtime info, PR linking and codex's mode prompt to every session                                                                                                                       | Runtime info and PR linking; codex also gets the browser and device tool guide. Codex uses its own plan-mode prompt          |
+| Antigravity                                        | T3 ran its managed install                                                                                                                                                                       | The managed install still downloads but is unused: anyagent runs its own `agy`                                               |
+| T3 MCP tools (browser, devices, PR linking)        | Every agent                                                                                                                                                                                      | claude, codex and opencode; antigravity runs without them                                                                    |
+| Per-turn token usage                               | claude, codex, opencode                                                                                                                                                                          | Same, plus antigravity; cursor and grok report none                                                                          |
+| Tool denied (a rule refused a tool without asking) | claude                                                                                                                                                                                           | Same                                                                                                                         |
 
 Each row has a matching gaps.md row in the anyagent repo.
 
@@ -85,8 +87,9 @@ turn with a typed error.
   runs `agy` from its own discovery, not T3's managed copy.
 - **Antigravity sign-in inside T3.** The sign-in and sign-out flow ran over T3's ACP client.
   Sign in with `agy` itself.
-- **Native provider log.** `ProviderEventLoggers.native` (raw agent frames per thread) is no
-  longer written. The canonical log is unchanged.
+- **Native provider log.** `ProviderEventLoggers.native` is no longer written. When it is on,
+  anyagent records each thread's raw wire beside it instead: `events.<thread>.wire.log`, one
+  `{"dir":"in"|"out","frame":…}` per line, unredacted. The canonical log is unchanged.
 
 ## Not wired yet (anyagent has it, the adapter does not use it)
 
@@ -96,6 +99,6 @@ turn with a typed error.
 
 Browser preview, devices and pull-request linking reach the agent through T3's own MCP server.
 The adapter declares it at `open` (HTTP, with the thread's bearer header) for agents whose probe
-takes HTTP MCP servers; claude and codex connect to it (codex gets the bearer token through an
-environment variable, not its command line). OpenCode and Antigravity refuse client-declared MCP servers
-in anyagent, so the adapter does not declare it for them either.
+takes HTTP MCP servers: claude, codex and opencode connect to it (codex gets the bearer token
+through an environment variable, not its command line). Antigravity refuses client-declared MCP
+servers in anyagent, so the adapter does not declare it there.
