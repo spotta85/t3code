@@ -22,7 +22,6 @@ import {
   type ConfigValue,
   type Delivery,
   type Event,
-  type McpServer,
   type PermissionMode,
   type PermissionRequest,
   type Question,
@@ -168,6 +167,13 @@ export const makeAnyagentAdapter = (
         const configure = selectedOptions(kind, input.modelSelection, details());
         const mcp = t3Mcp(input.threadId, details());
         const wire = native && wireLogPath(native.filePath, input.threadId);
+        // T3's `t3-code` MCP server: HTTP, with the thread's bearer header.
+        const server = mcp && {
+          name: "t3-code",
+          connection: {
+            Http: { url: mcp.endpoint, headers: { Authorization: mcp.authorizationHeader } },
+          },
+        };
         const open = (token: string | undefined) =>
           call(input.threadId, "open", () =>
             use((runtime) =>
@@ -177,7 +183,7 @@ export const makeAnyagentAdapter = (
                 permission_mode: PERMISSION_MODE[input.runtimeMode],
                 instructions: sessionInstructions(kind, mcp),
                 ...(token !== undefined ? { resume: token } : {}),
-                ...(mcp ? { mcp_servers: [t3McpServer(mcp)] } : {}),
+                ...(server ? { mcp_servers: [server] } : {}),
                 ...(Object.keys(configure).length > 0 ? { configure } : {}),
                 ...(wire ? { record_wire: wire } : {}),
               }),
@@ -536,12 +542,6 @@ function snapshot(t: Thread): ProviderThreadSnapshot {
 function t3Mcp(threadId: ThreadId, details: AgentDetails | null) {
   const mcp = McpProviderSession.readMcpProviderSession(threadId);
   return mcp && details?.capabilities.mcp_transports.includes("Http") ? mcp : undefined;
-}
-
-/** T3's `t3-code` MCP server as `open` declares it: HTTP with the thread's bearer header. */
-function t3McpServer(mcp: McpProviderSession.McpProviderSessionConfig): McpServer {
-  const headers = { Authorization: mcp.authorizationHeader };
-  return { name: "t3-code", connection: { Http: { url: mcp.endpoint, headers } } };
 }
 
 /** T3's instructions for every session: runtime info and PR linking; codex also gets the guide to the T3 tools it has. */
