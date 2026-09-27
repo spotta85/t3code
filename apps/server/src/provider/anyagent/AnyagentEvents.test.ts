@@ -212,6 +212,14 @@ describe("toProviderRuntimeEvents", () => {
     ]);
   });
 
+  it("ToolUpdated Denied with no raw name and no title -> tool.denied names the tool kind", () => {
+    const denied = { ...tool("Running"), status: "Denied" as const, title: " " };
+    expect(map({ ToolUpdated: denied })[1]).toMatchObject({
+      type: "tool.denied",
+      payload: { toolName: "Execute", toolUseId: "tool-1" },
+    });
+  });
+
   it("ToolOutputDelta -> command_output content.delta", () => {
     expect(map({ ToolOutputDelta: { tool_id: "tool-1", text: "ok\n" } })).toMatchObject([
       {

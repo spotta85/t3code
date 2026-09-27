@@ -398,11 +398,16 @@ function toolDenied(base: Base, tool: ToolUpdate): ProviderRuntimeEvent {
     ...base,
     type: "tool.denied",
     payload: {
-      toolName: tool.raw?.name.trim() || tool.title.trim(),
+      toolName: tool.raw?.name.trim() || tool.title.trim() || kindName(tool.kind),
       toolUseId: tool.id,
       ...(reason ? { reason } : {}),
     },
   };
+}
+
+/** A tool kind's name: "Execute", or an MCP tool's own name. */
+function kindName(kind: ToolKind): string {
+  return typeof kind === "string" ? kind : kind.Mcp.tool;
 }
 
 /** `base` for the i-th extra T3 event one anyagent event maps to. */
