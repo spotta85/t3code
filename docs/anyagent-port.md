@@ -114,30 +114,30 @@ the agent's account was out, so the row is not proven there. The last five rows,
 deny, subagent, generate and plan, are from a later run the same day (grok had quota again, cursor
 did not).
 
-| Row                       | claude               | codex                                | cursor                 | grok                  | opencode           | antigravity           |
-| ------------------------- | -------------------- | ------------------------------------ | ---------------------- | --------------------- | ------------------ | --------------------- |
-| discover, usage-limits    | PASS                 | PASS                                 | PASS                   | PASS                  | PASS               | PASS                  |
-| open+stream               | PASS                 | PASS                                 | PASS¹                  | PASS¹                 | PASS               | PASS                  |
-| tool+diff                 | PASS                 | PASS                                 | PASS¹                  | PASS                  | PASS               | PASS                  |
-| permission                | PASS                 | PASS                                 | SKIP: edits unasked¹ ³ | PASS                  | FAIL (agent)⁴      | PASS                  |
-| deny                      | PASS                 | PASS                                 | quota                  | PASS                  | PASS               | PASS                  |
-| question                  | PASS                 | PASS                                 | quota                  | PASS¹                 | PASS               | PASS                  |
-| subagent                  | PASS                 | SKIP: claude only                    | SKIP: claude only      | SKIP: claude only     | SKIP: claude only  | SKIP: claude only     |
-| model-switch              | PASS                 | PASS                                 | PASS²                  | SKIP: one model       | PASS               | PASS                  |
-| cancel                    | PASS                 | PASS                                 | quota                  | PASS¹                 | PASS               | PASS                  |
-| resume                    | PASS                 | PASS                                 | quota                  | PASS                  | PASS               | PASS                  |
-| rollback                  | PASS                 | PASS                                 | SKIP: no rollback      | SKIP: no rollback     | PASS               | SKIP: no rollback     |
-| usage (per-turn tokens)   | PASS                 | PASS                                 | SKIP: ACP              | quota                 | PASS               | SKIP: ACP             |
-| generate (T3's own title) | PASS                 | PASS                                 | quota                  | PASS                  | PASS               | PASS                  |
-| instructions              | PASS                 | PASS                                 | PASS²                  | quota                 | PASS               | PASS                  |
-| plan                      | PASS                 | PASS                                 | quota                  | SKIP: no plan mode    | SKIP: no plan mode | SKIP: no plan mode    |
-| accept-edits              | PASS                 | SKIP: sandbox runs the shell unasked | quota                  | quota                 | PASS               | PASS                  |
-| mcp-tool                  | PASS                 | PASS                                 | quota                  | quota                 | PASS               | PASS                  |
-| turn-diff                 | SKIP: not codex      | PASS                                 | quota                  | SKIP: not codex       | SKIP: not codex    | SKIP: not codex       |
-| subagent-info             | PASS                 | PASS⁵                                | quota                  | SKIP: no subagent     | PASS⁶              | SKIP: no subagent     |
-| cancel-request            | PASS: turn cancelled | PASS: turn cancelled                 | quota                  | PASS: turn cancelled  | PASS: turn goes on | PASS: turn goes on    |
-| skills                    | PASS: `/` command    | PASS: skill with path                | quota                  | SKIP: no skill folder | PASS: `/` command  | SKIP: no skill folder |
-| schema-generate           | PASS                 | PASS                                 | quota                  | SKIP: free text       | SKIP: free text    | SKIP: free text       |
+| Row                       | claude               | codex                                | cursor                 | grok                  | opencode                      | antigravity           |
+| ------------------------- | -------------------- | ------------------------------------ | ---------------------- | --------------------- | ----------------------------- | --------------------- |
+| discover, usage-limits    | PASS                 | PASS                                 | PASS                   | PASS                  | PASS                          | PASS                  |
+| open+stream               | PASS                 | PASS                                 | PASS¹                  | PASS¹                 | PASS                          | PASS                  |
+| tool+diff                 | PASS                 | PASS                                 | PASS¹                  | PASS                  | PASS                          | PASS                  |
+| permission                | PASS                 | PASS                                 | SKIP: edits unasked¹ ³ | PASS                  | FAIL (agent)⁴                 | PASS                  |
+| deny                      | PASS                 | PASS                                 | quota                  | PASS                  | PASS                          | PASS                  |
+| question                  | PASS                 | PASS                                 | quota                  | PASS¹                 | PASS                          | PASS                  |
+| subagent                  | PASS                 | SKIP: claude only                    | SKIP: claude only      | SKIP: claude only     | SKIP: claude only             | SKIP: claude only     |
+| model-switch              | PASS                 | PASS                                 | PASS²                  | SKIP: one model       | PASS                          | PASS                  |
+| cancel                    | PASS                 | PASS                                 | quota                  | PASS¹                 | PASS                          | PASS                  |
+| resume                    | PASS                 | PASS                                 | quota                  | PASS                  | PASS                          | PASS                  |
+| rollback                  | PASS                 | PASS                                 | SKIP: no rollback      | SKIP: no rollback     | PASS                          | SKIP: no rollback     |
+| usage (per-turn tokens)   | PASS                 | PASS                                 | SKIP: ACP              | quota                 | PASS                          | SKIP: ACP             |
+| generate (T3's own title) | PASS                 | PASS                                 | quota                  | PASS                  | PASS                          | PASS                  |
+| instructions              | PASS                 | PASS                                 | PASS²                  | quota                 | PASS                          | PASS                  |
+| plan                      | PASS                 | PASS                                 | quota                  | SKIP: no plan mode    | SKIP: no plan mode            | SKIP: no plan mode    |
+| accept-edits              | PASS                 | SKIP: sandbox runs the shell unasked | quota                  | quota                 | PASS                          | PASS                  |
+| mcp-tool                  | PASS                 | PASS                                 | quota                  | quota                 | PASS                          | PASS                  |
+| turn-diff                 | SKIP: not codex      | PASS                                 | quota                  | SKIP: not codex       | SKIP: not codex               | SKIP: not codex       |
+| subagent-info             | PASS: role, tokens   | PASS: model, tokens; no role⁵        | quota                  | SKIP: no subagent     | PASS: role, model; no tokens⁶ | SKIP: no subagent     |
+| cancel-request            | PASS: turn cancelled | PASS: turn cancelled                 | quota                  | PASS: turn cancelled  | PASS: turn goes on            | PASS: turn goes on    |
+| skills                    | PASS: `/` command    | PASS: skill with path                | quota                  | SKIP: no skill folder | PASS: `/` command             | SKIP: no skill folder |
+| schema-generate           | PASS                 | PASS                                 | quota                  | SKIP: free text       | SKIP: free text               | SKIP: free text       |
 
 ¹ Passed (or, for the SKIPs, was seen on the wire) in the first run, before the account's quota
 ran out: cursor's free plan ("Upgrade your plan to continue"), grok's free usage (429,
@@ -147,9 +147,10 @@ wire, not the reply.
 ³ cursor's agent mode edits with no ACP `session/request_permission`, so Ask mode cannot stop it.
 ⁴ opencode's free model answered "hello" to the queued "reply with the single word queued"; the
 wire shows the prompt reached opencode. It failed in 4 of 5 runs, always with "hello".
-⁵ codex names no role; the row passed on the child's model (`gpt-5.6-luna`) and its tokens. The
+⁵ The row passes when a task row names a role or a model, and the cell lists what arrived.
+codex's wire names no role; the row passed on the child's model (`gpt-5.6-luna`) and its tokens. The
 first run failed: anyagent did not link children spawned by `collabAgentToolCall`, fixed since.
-⁶ opencode sends a role and a model, no tokens. The first run failed: anyagent read neither,
+⁶ opencode's wire carries a role and a model, and no token count for the child. The first run failed: anyagent read neither,
 fixed since.
 
 "SKIP: ACP" is decided from the wire: the session spoke ACP (`session/prompt`) and its turn carried
