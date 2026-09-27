@@ -114,7 +114,7 @@ the agent's account was out, so the row is not proven there.
 | open+stream               | PASS   | PASS                                 | PASS¹                  | PASS¹              | PASS               | PASS               |
 | tool+diff                 | PASS   | PASS                                 | PASS¹                  | PASS               | PASS               | PASS               |
 | permission                | PASS   | PASS                                 | SKIP: edits unasked¹ ³ | PASS               | FAIL (agent)⁴      | PASS               |
-| deny                      | PASS   | PASS                                 | SKIP: edits unasked¹ ³ | PASS¹              | PASS               | PASS               |
+| deny                      | PASS   | PASS                                 | quota                  | PASS¹              | PASS               | PASS               |
 | question                  | PASS   | PASS                                 | quota                  | PASS¹              | PASS               | PASS               |
 | subagent                  | PASS   | SKIP: claude only                    | SKIP: claude only      | SKIP: claude only  | SKIP: claude only  | SKIP: claude only  |
 | model-switch              | PASS   | PASS                                 | PASS²                  | SKIP: one model    | PASS               | PASS               |
@@ -135,7 +135,7 @@ ran out: cursor's free plan ("Upgrade your plan to continue"), grok's free usage
 wire, not the reply.
 ³ cursor's agent mode edits with no ACP `session/request_permission`, so Ask mode cannot stop it.
 ⁴ opencode's free model answered "hello" to the queued "reply with the single word queued"; the
-wire shows the prompt reached opencode. It passed in the run before.
+wire shows the prompt reached opencode. It failed in 3 of 4 runs, always with "hello".
 
 "SKIP: ACP" is decided from the wire: the session spoke ACP (`session/prompt`) and its turn carried
 no token counts; antigravity here is its ACP server (its native adapter over `agy` reports them).
