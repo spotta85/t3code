@@ -63,7 +63,7 @@ import {
   toProviderRuntimeEvents,
 } from "./AnyagentEvents.ts";
 import { AnyagentRuntime, type Launch } from "./AnyagentRuntime.ts";
-import { offersPlan, openableOptions, selectedOptions } from "./AnyagentSnapshot.ts";
+import { offersPlan, selectedOptions } from "./AnyagentSnapshot.ts";
 import { type AnyagentAdapterError, toAdapterError } from "./Errors.ts";
 
 type Adapter = ProviderAdapterShape<AnyagentAdapterError>;
@@ -165,8 +165,7 @@ export const makeAnyagentAdapter = (
         let warning = prePort ? PRE_PORT_RESUME_WARNING : undefined;
         yield* stopSession(input.threadId);
         const cwd = input.cwd ?? config.cwd;
-        const openable = openableOptions(details(), input.modelSelection?.model);
-        const configure = selectedOptions(kind, input.modelSelection, openable);
+        const configure = selectedOptions(kind, input.modelSelection, details());
         const mcp = t3Mcp(input.threadId, details());
         const wire = native && wireLogPath(native.filePath, input.threadId);
         const open = (token: string | undefined) =>
@@ -235,12 +234,7 @@ export const makeAnyagentAdapter = (
         const current = t.session.info.configuration.options.mode;
         const mode = plan ? "plan" : current === "plan" ? defaultMode(t) : undefined;
         if (mode !== undefined && mode !== current) yield* setMode(t, mode);
-        const model = input.modelSelection?.model;
-        const picks = selectedOptions(
-          kind,
-          input.modelSelection,
-          openableOptions(t.session.info.details, model),
-        );
+        const picks = selectedOptions(kind, input.modelSelection, t.session.info.details);
         for (const [id, value] of Object.entries(picks)) {
           // After a model switch the session lists that model's options; a pick it lacks is dropped.
           const { details: live, configuration } = t.session.info;

@@ -47,7 +47,7 @@ import {
 } from "../providerUpdateSettings.ts";
 import { makeAnyagentAdapter } from "./AnyagentAdapter.ts";
 import { AnyagentRuntime, type Launch } from "./AnyagentRuntime.ts";
-import { type AgentProbe, openableOptions, toServerProviderSnapshot } from "./AnyagentSnapshot.ts";
+import { type AgentProbe, toServerProviderSnapshot } from "./AnyagentSnapshot.ts";
 import { makeAnyagentTextGeneration } from "./AnyagentTextGeneration.ts";
 
 /** The settings fields the driver reads (`homePath`, `launchArgs`: some kinds only); the rest are ignored. */
@@ -190,9 +190,7 @@ export const makeAnyagentDriver = (
         enabled,
         snapshot,
         adapter: yield* makeAnyagentAdapter(kind, launch, () => latest),
-        textGeneration: yield* makeAnyagentTextGeneration(kind, launch, (model) =>
-          openableOptions(latest, model),
-        ),
+        textGeneration: yield* makeAnyagentTextGeneration(kind, launch, () => latest),
       } satisfies ProviderInstance;
     }),
 });

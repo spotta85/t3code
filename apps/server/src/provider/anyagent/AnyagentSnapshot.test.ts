@@ -3,12 +3,7 @@ import * as Schema from "effect/Schema";
 import { ProviderDriverKind, ProviderInstanceId, ServerProvider } from "@t3tools/contracts";
 import { type AgentDetails, AnyagentError, type ConfigOption, type PlanUsage } from "anyagent-ts";
 
-import {
-  anyagentOptionId,
-  openableOptions,
-  selectedOptions,
-  toServerProviderSnapshot,
-} from "./AnyagentSnapshot.ts";
+import { anyagentOptionId, selectedOptions, toServerProviderSnapshot } from "./AnyagentSnapshot.ts";
 
 const KIND = ProviderDriverKind.make("claudeAgent");
 const AT = "2026-09-26T00:00:00.000Z";
@@ -311,8 +306,7 @@ describe("toServerProviderSnapshot", () => {
         { id: "tier", value: "a" },
       ],
     });
-    const picked = (slug: string) =>
-      selectedOptions(KIND, pick(slug), openableOptions(details, slug));
+    const picked = (slug: string) => selectedOptions(KIND, pick(slug), details);
     expect(picked("opus")).toEqual({ model: "opus", fast: true, tier: "a" });
     // `default` carries no fast: the pick stays home, the shared `tier` still goes.
     expect(picked("default")).toEqual({ model: "default", tier: "a" });
@@ -431,7 +425,7 @@ describe("toServerProviderSnapshot", () => {
     };
     // The web keeps only picks whose id a descriptor has.
     expect(selection.options.every((o) => ids.includes(o.id))).toBe(true);
-    expect(selectedOptions(KIND, selection, new Set(["model", "effort"]))).toEqual({
+    expect(selectedOptions(KIND, selection, claude)).toEqual({
       model: "default",
       effort: "max",
     });
@@ -448,13 +442,19 @@ describe("toServerProviderSnapshot", () => {
       ],
     };
     const codex = ProviderDriverKind.make("codex");
-    expect(selectedOptions(codex, selection, new Set(["model", "effort", "fast"]))).toEqual({
+    const details = { ...claude, config_options: ["model", "effort", "fast"].map(booleanOption) };
+    expect(selectedOptions(codex, selection, details)).toEqual({
       model: "gpt-5.6-sol",
       effort: "low",
       fast: false,
     });
   });
 });
+
+/** A live boolean option with id `id`: enough for the option filter, which reads ids only. */
+function booleanOption(id: string): ConfigOption {
+  return { id, name: id, kind: "Boolean", current: false, live: true };
+}
 
 /** The snapshot with the identity fields the driver stamps, so it decodes as T3's ServerProvider. */
 function stamp(snapshot: object) {

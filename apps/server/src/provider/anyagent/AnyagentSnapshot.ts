@@ -103,13 +103,18 @@ export function anyagentOptionId(kind: ProviderDriverKind, t3Id: string): string
   return Object.entries(renamed(kind)).find(([, t3]) => t3 === t3Id)?.[0] ?? t3Id;
 }
 
-/** The anyagent options a T3 model selection sets (its model, then each picked option), kept to `advertised` ids. */
+/**
+ * The anyagent options a T3 model selection sets (its model, then each picked option), kept to the options the chosen
+ * model has (`modelOptions`); just the model when the probe failed.
+ */
 export function selectedOptions(
   kind: ProviderDriverKind,
   selection: ModelSelection | undefined,
-  advertised: ReadonlySet<string>,
+  details: AgentDetails | null,
 ): Record<string, ConfigValue> {
   if (!selection) return {};
+  const options = details ? modelOptions(details.config_options, selection.model) : [];
+  const advertised = new Set(details ? options.map((o) => o.id) : ["model"]);
   const picked: Array<[string, ConfigValue]> = [
     ["model", selection.model],
     ...(selection.options ?? []).map((o): [string, ConfigValue] => [
@@ -118,22 +123,6 @@ export function selectedOptions(
     ]),
   ];
   return Object.fromEntries(picked.filter(([id]) => advertised.has(id)));
-}
-
-/**
- * Option ids `open`, `generate` and a turn may set for `model`: the session's options no model carries, plus the
- * ones `model` carries itself; just the model when the probe failed.
- */
-export function openableOptions(
-  details: AgentDetails | null,
-  model: string | undefined,
-): ReadonlySet<string> {
-  if (!details) return new Set(["model"]);
-  const options = details.config_options;
-  const perModel = perModelIds(options);
-  const own = modelChoices(options).find((c) => c.value === model)?.options ?? [];
-  const shared = options.map((o) => o.id).filter((id) => !perModel.has(id));
-  return new Set([...shared, ...own.map((o) => o.id)]);
 }
 
 /** Whether the agent's live `mode` option offers `plan`: T3's plan turns switch to it. */
@@ -227,23 +216,26 @@ function agentModels(
 ): ReadonlyArray<ServerProviderModel> {
   const model = options.find((o) => o.id === "model");
   if (!model || model.kind === "Boolean") return [];
-  // An option some model carries itself (effort, fast) is per model; the session's others apply to every model.
-  const perModel = perModelIds(options);
-  const shared = options.filter((o) => !perModel.has(o.id));
   return model.kind.Select.choices.map((choice) => ({
     slug: choice.value,
     name: choice.label.trim() || choice.value,
     isCustom: false,
     ...(choice.value === model.current ? { isDefault: true } : {}),
     capabilities: createModelCapabilities({
-      optionDescriptors: optionDescriptors(kind, [...(choice.options ?? []), ...shared]),
+      optionDescriptors: optionDescriptors(kind, modelOptions(options, choice.value)),
     }),
   }));
 }
 
-/** Ids of the options some choice of the `model` option carries itself (effort, fast). */
-function perModelIds(options: ReadonlyArray<ConfigOption>): ReadonlySet<string> {
-  return new Set(modelChoices(options).flatMap((c) => (c.options ?? []).map((o) => o.id)));
+/**
+ * The options `model` has: its own (effort, fast) plus the session's that no model carries. What the picker shows
+ * and what `selectedOptions` sends both come from here.
+ */
+function modelOptions(options: ReadonlyArray<ConfigOption>, model: string): ConfigOption[] {
+  const choices = modelChoices(options);
+  const perModel = new Set(choices.flatMap((c) => (c.options ?? []).map((o) => o.id)));
+  const own = choices.find((c) => c.value === model)?.options ?? [];
+  return [...own, ...options.filter((o) => !perModel.has(o.id))];
 }
 
 /** The choices of the `model` option; none when the agent has no model select. */

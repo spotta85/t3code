@@ -15,6 +15,7 @@ import { extractJsonObject } from "@t3tools/shared/schemaJson";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
+import type { AgentDetails } from "anyagent-ts";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
@@ -41,12 +42,12 @@ const TIMEOUT = "180 seconds";
 
 /**
  * Text generation for `kind` over the agent `launch` names: each call builds T3's prompt, asks anyagent for one reply,
- * and decodes the JSON in it. `advertised(model)` limits which picked options reach the agent.
+ * and decodes the JSON in it. `details()` (the newest probe) limits which picked options reach the agent.
  */
 export const makeAnyagentTextGeneration = (
   kind: ProviderDriverKind,
   launch: Launch,
-  advertised: (model: string) => ReadonlySet<string>,
+  details: () => AgentDetails | null,
 ) =>
   Effect.gen(function* () {
     const { use } = yield* AnyagentRuntime;
@@ -69,7 +70,7 @@ export const makeAnyagentTextGeneration = (
               {
                 ...launch.options,
                 dir: cwd,
-                configure: selectedOptions(kind, modelSelection, advertised(modelSelection.model)),
+                configure: selectedOptions(kind, modelSelection, details()),
                 attachments: imagePaths(attachmentsDir, attachments),
               },
               prompt,

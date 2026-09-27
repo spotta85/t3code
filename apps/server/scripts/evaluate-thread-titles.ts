@@ -70,7 +70,7 @@ await Effect.runPromise(
     const generation = yield* makeAnyagentTextGeneration(
       ProviderDriverKind.make("codex"),
       { agent: "codex", options: {} },
-      () => new Set(["model"]),
+      () => null,
     );
     const baseline = values.baseline
       ? yield* fs.readFileString(values.baseline).pipe(Effect.flatMap(decodeResults))
