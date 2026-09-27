@@ -159,6 +159,27 @@ describe("toServerProviderSnapshot", () => {
     });
   });
 
+  it("the plan toggle shows only when the live `mode` option offers `plan`", () => {
+    const withModes = (values: string[], live = true): AgentDetails => ({
+      ...claude,
+      config_options: [
+        {
+          id: "mode",
+          name: "Mode",
+          kind: { Select: { choices: values.map((value) => ({ value, label: value })) } },
+          current: "default",
+          live,
+        },
+      ],
+    });
+    const toggle = (details: AgentDetails) =>
+      toServerProviderSnapshot(KIND, { details }, settings, AT).showInteractionModeToggle;
+    expect(toggle(withModes(["default", "plan"]))).toBe(true);
+    expect(toggle(withModes(["default", "acceptEdits"]))).toBe(false);
+    expect(toggle(withModes(["default", "plan"], false))).toBe(false);
+    expect(toggle({ ...claude, config_options: [] })).toBe(false);
+  });
+
   it("a missing agent is not installed, with anyagent's install hint", () => {
     const hint = "install Antigravity from https://antigravity.google, then run `agy install`";
     const probe = { error: "NotInstalled: agent not installed: antigravity", installHint: hint };

@@ -58,8 +58,7 @@ export function toServerProviderSnapshot(
     presentation: {
       displayName: settings.displayName,
       supportsConversationRollback: details?.capabilities.features.includes("Rollback") ?? false,
-      // The adapter refuses plan turns (gaps.md), so the toggle stays hidden.
-      showInteractionModeToggle: false,
+      showInteractionModeToggle: offersPlan(options),
     },
     enabled: settings.enabled,
     checkedAt,
@@ -114,6 +113,13 @@ export function selectedOptions(
 /** Option ids `open` and `generate` may set: the probed ones, or just the model when the probe failed. */
 export function openableOptions(details: AgentDetails | null): ReadonlySet<string> {
   return new Set(details ? details.config_options.map((o) => o.id) : ["model"]);
+}
+
+/** Whether the agent's live `mode` option offers `plan`: T3's plan turns switch to it. */
+export function offersPlan(options: ReadonlyArray<ConfigOption>): boolean {
+  const mode = options.find((o) => o.id === "mode");
+  if (!mode?.live || mode.kind === "Boolean") return false;
+  return mode.kind.Select.choices.some((c) => c.value === "plan");
 }
 
 // ---------------------------------------------------------------------------
