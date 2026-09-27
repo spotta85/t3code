@@ -5,10 +5,22 @@
  *
  * @module AnyagentRuntime
  */
-import { AnyagentError, Runtime, type StartOptions } from "anyagent-ts";
+import {
+  type AgentRef,
+  AnyagentError,
+  type OpenOptions,
+  Runtime,
+  type StartOptions,
+} from "anyagent-ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+
+/** What an instance's settings give every call for its agent: probe, open, generate, plan usage. */
+export interface Launch {
+  readonly agent: AgentRef;
+  readonly options: Pick<OpenOptions, "env" | "args" | "config_home">;
+}
 
 /** The shared anyagent-ts Runtime, reached through `use`. */
 export class AnyagentRuntime extends Context.Service<

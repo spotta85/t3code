@@ -69,7 +69,7 @@ await Effect.runPromise(
     // Codex through anyagent; only the picked model reaches the agent.
     const generation = yield* makeAnyagentTextGeneration(
       ProviderDriverKind.make("codex"),
-      "codex",
+      { agent: "codex", options: {} },
       () => new Set(["model"]),
     );
     const baseline = values.baseline

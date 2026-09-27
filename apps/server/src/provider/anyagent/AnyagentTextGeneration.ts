@@ -30,7 +30,7 @@ import {
   sanitizePrTitle,
   sanitizeThreadTitle,
 } from "../../textGeneration/TextGenerationUtils.ts";
-import { AnyagentRuntime } from "./AnyagentRuntime.ts";
+import { AnyagentRuntime, type Launch } from "./AnyagentRuntime.ts";
 import { selectedOptions } from "./AnyagentSnapshot.ts";
 
 type Service = TextGeneration["Service"];
@@ -40,12 +40,12 @@ type Operation = keyof Service;
 const TIMEOUT = "180 seconds";
 
 /**
- * Text generation for `kind` over `agent`: each call builds T3's prompt, asks anyagent for one reply,
+ * Text generation for `kind` over the agent `launch` names: each call builds T3's prompt, asks anyagent for one reply,
  * and decodes the JSON in it. `advertised()` limits which picked options reach the agent.
  */
 export const makeAnyagentTextGeneration = (
   kind: ProviderDriverKind,
-  agent: string,
+  launch: Launch,
   advertised: () => ReadonlySet<string>,
 ) =>
   Effect.gen(function* () {
@@ -65,8 +65,9 @@ export const makeAnyagentTextGeneration = (
         try: () =>
           use((runtime) =>
             runtime.generate(
-              agent,
+              launch.agent,
               {
+                ...launch.options,
                 dir: cwd,
                 configure: selectedOptions(kind, modelSelection, advertised()),
                 attachments: imagePaths(attachmentsDir, attachments),

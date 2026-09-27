@@ -25,7 +25,7 @@ import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import type { AnyagentAdapterError } from "./Errors.ts";
 import { makeAnyagentAdapter } from "./AnyagentAdapter.ts";
 import { PRE_PORT_RESUME_WARNING, RESUME_FAILED_WARNING } from "./AnyagentEvents.ts";
-import { AnyagentRuntime, makeAnyagentRuntimeLayer } from "./AnyagentRuntime.ts";
+import { AnyagentRuntime, type Launch, makeAnyagentRuntimeLayer } from "./AnyagentRuntime.ts";
 
 // The anyagent checkout next to this one; its release binary is built with `--features mock`.
 const ANYAGENT = NodePath.resolve(import.meta.dirname, "../../../../../../anyagent");
@@ -492,6 +492,40 @@ describe("AnyagentAdapter over the mock binary", () => {
     }).pipe(Effect.ensuring(Effect.sync(() => McpProviderSession.clearMcpProviderSession(A)))),
   );
 
+  it.live(
+    "open carries the launch options; a device grant puts the agent-device shim on PATH",
+    () =>
+      Effect.gen(function* () {
+        McpProviderSession.setMcpProviderSession({
+          environmentId: EnvironmentId.make("env-1"),
+          threadId: A,
+          providerSessionId: "provider-session-1",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          endpoint: "http://127.0.0.1:3773/mcp",
+          authorizationHeader: "Bearer secret",
+          capabilities: new Set(["preview", "device"]),
+          agentDeviceEnvironment: { PATH: "/t3/shim", PATH_SEPARATOR: ":", AGENT_DEVICE_X: "1" },
+        });
+        const launch = { env: { FOO: "1" }, args: ["--verbose"], config_home: "/homes/work" };
+        yield* run(
+          "turn",
+          (adapter, _waitFor, _seen, opened) =>
+            Effect.gen(function* () {
+              yield* adapter.startSession({ threadId: A, cwd, runtimeMode: "approval-required" });
+              yield* adapter.startSession({ threadId: B, cwd, runtimeMode: "approval-required" });
+              const [withDevices, plain] = opened();
+              expect(withDevices).toMatchObject({
+                args: ["--verbose"],
+                config_home: "/homes/work",
+                env: { FOO: "1", AGENT_DEVICE_X: "1", PATH: `/t3/shim:${process.env.PATH}` },
+              });
+              expect(plain).toMatchObject({ ...launch, env: { FOO: "1" } });
+            }),
+          { kind: "codex", mcpTransports: ["Http"], launch },
+        );
+      }).pipe(Effect.ensuring(Effect.sync(() => McpProviderSession.clearMcpProviderSession(A)))),
+  );
+
   it.live("with T3's native log on, each thread's wire is recorded beside it; off, none is", () =>
     Effect.gen(function* () {
       const dir = NodeFS.mkdtempSync(NodePath.join(cwd, "t3-wire-"));
@@ -530,7 +564,8 @@ type WaitFor = (match: (e: ProviderRuntimeEvent) => boolean) => Effect.Effect<Pr
  * Runs `body` against an adapter over `anyagent serve --mock <script>.json`.
  * Every event the adapter emits is collected; `waitFor` polls them and, after
  * 5 s, dies listing what it saw. `opened` lists the options of every `open` sent.
- * `mcpTransports` overrides the mock's probe (it advertises none); `kind` replaces claudeAgent, `agent` the mock.
+ * `mcpTransports` overrides the mock's probe (it advertises none); `kind` replaces claudeAgent, `agent` the mock,
+ * `launch` the instance's launch options (none by default).
  * `nativeLog` turns T3's native event log on at that path (off by default).
  */
 function run<A, E>(
@@ -545,6 +580,7 @@ function run<A, E>(
     readonly mcpTransports?: McpTransport[];
     readonly kind?: string;
     readonly agent?: string;
+    readonly launch?: Launch["options"];
     readonly nativeLog?: string;
   } = {},
 ) {
@@ -587,7 +623,7 @@ function run<A, E>(
     const kind = options.kind ? ProviderDriverKind.make(options.kind) : KIND;
     const adapter = yield* makeAnyagentAdapter(
       kind,
-      options.agent ?? "mock",
+      { agent: options.agent ?? "mock", options: options.launch ?? {} },
       details && (() => details),
     );
     const events: ProviderRuntimeEvent[] = [];

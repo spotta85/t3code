@@ -56,19 +56,19 @@ import {
   sessionStartedEvent,
   toProviderRuntimeEvents,
 } from "./AnyagentEvents.ts";
-import { AnyagentRuntime } from "./AnyagentRuntime.ts";
+import { AnyagentRuntime, type Launch } from "./AnyagentRuntime.ts";
 import { offersPlan, openableOptions, selectedOptions } from "./AnyagentSnapshot.ts";
 import { type AnyagentAdapterError, toAdapterError } from "./Errors.ts";
 
 type Adapter = ProviderAdapterShape<AnyagentAdapterError>;
 
 /**
- * The adapter for T3 kind `kind` over anyagent `agent`: one session per thread, its events pumped into `streamEvents`.
+ * The adapter for T3 kind `kind` over the agent `launch` names: one session per thread, its events pumped into `streamEvents`.
  * `latest` reads the driver's newest probe (`null`: none yet); omitted, the adapter probes once itself.
  */
 export const makeAnyagentAdapter = (
   kind: ProviderDriverKind,
-  agent: string,
+  launch: Launch,
   latest?: () => AgentDetails | null,
 ): Effect.Effect<
   Adapter,
@@ -82,7 +82,7 @@ export const makeAnyagentAdapter = (
     const scope = yield* Effect.scope;
     const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
     const threads = new Map<ThreadId, Thread>();
-    const own = latest ? null : yield* probeDetails(use, agent);
+    const own = latest ? null : yield* probeDetails(use, launch);
     const details = latest ?? (() => own);
     const features = () => details()?.capabilities.features ?? [];
 
@@ -155,10 +155,13 @@ export const makeAnyagentAdapter = (
         const configure = selectedOptions(kind, input.modelSelection, openableOptions(details()));
         const mcp = t3Mcp(input.threadId, details());
         const wire = native && wireLogPath(native.filePath, input.threadId);
+        const env = withDeviceShim(launch.options.env, mcp);
         const open = (token: string | undefined) =>
           call(input.threadId, "open", () =>
             use((runtime) =>
-              runtime.open(agent, {
+              runtime.open(launch.agent, {
+                ...launch.options,
+                ...(env ? { env } : {}),
                 dir: cwd,
                 permission_mode: PERMISSION_MODE[input.runtimeMode],
                 instructions: sessionInstructions(kind, mcp),
@@ -504,6 +507,21 @@ function sessionInstructions(
   return tools ? `${runtime}\n\n${tools}` : runtime;
 }
 
+/** The instance's env plus, when the thread may drive devices, the `agent-device` shim ahead of the server's PATH. */
+function withDeviceShim(
+  env: Record<string, string> | undefined,
+  mcp: McpProviderSession.McpProviderSessionConfig | undefined,
+): Record<string, string> | undefined {
+  if (!mcp?.agentDeviceEnvironment) return env;
+  const merged = McpProviderSession.withAgentDeviceEnvironment(
+    { PATH: process.env.PATH, ...env },
+    mcp,
+  );
+  return Object.fromEntries(
+    Object.entries(merged).filter((entry): entry is [string, string] => entry[1] !== undefined),
+  );
+}
+
 /** The file anyagent records a thread's raw wire to: beside the native log, named like its per-thread files. */
 function wireLogPath(nativeLog: string, threadId: ThreadId): string | null {
   const segment = toSafeThreadAttachmentSegment(threadId);
@@ -543,11 +561,12 @@ function nextEvent(
 /** What the agent can do, probed once at build time; a failed probe is logged and offers nothing optional. */
 function probeDetails(
   use: AnyagentRuntime["Service"]["use"],
-  agent: string,
+  { agent, options }: Launch,
 ): Effect.Effect<AgentDetails | null> {
-  return Effect.tryPromise(() => use((runtime) => runtime.probe(agent))).pipe(
+  return Effect.tryPromise(() => use((runtime) => runtime.probe(agent, options))).pipe(
     Effect.catch((cause) =>
-      Effect.logWarning(`anyagent probe of '${agent}' failed; rollback and compaction stay off`, {
+      Effect.logWarning("anyagent probe failed; rollback and compaction stay off", {
+        agent,
         cause,
       }).pipe(Effect.as(null)),
     ),

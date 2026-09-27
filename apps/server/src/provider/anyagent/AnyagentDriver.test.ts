@@ -28,7 +28,7 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import type { ProviderDriverError } from "../Errors.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import type { ProviderInstance } from "../ProviderDriver.ts";
-import { makeAnyagentDriver } from "./AnyagentDriver.ts";
+import { launchOf, makeAnyagentDriver } from "./AnyagentDriver.ts";
 import {
   AnyagentRuntime,
   AnyagentRuntimeLive,
@@ -224,6 +224,91 @@ describe("AnyagentDriver over the mock binary", () => {
     );
   });
 
+  it("launchOf: each setting becomes its launch option; default settings give the plain agent id", () => {
+    const defaults = { enabled: true, binaryPath: "codex", customModels: [] };
+    expect(launchOf("codex", defaults, "codex", [])).toEqual({ agent: "codex", options: {} });
+    const home = NodeOS.homedir();
+    const environment = [
+      { name: "OPENAI_API_KEY", value: "sk-1", sensitive: true },
+      { name: "CODEX_HOME", value: "~/.codex-env", sensitive: false },
+    ];
+    const settings = {
+      ...defaults,
+      binaryPath: "/opt/codex/bin/codex",
+      launchArgs: `-c model="o3" --name 'two words'`,
+      homePath: "~/.codex-work",
+    };
+    expect(launchOf("codex", settings, "codex", environment)).toEqual({
+      agent: { id: "codex", path: "/opt/codex/bin/codex" },
+      options: {
+        env: { OPENAI_API_KEY: "sk-1", CODEX_HOME: NodePath.join(home, ".codex-env") },
+        args: ["-c", "model=o3", "--name", "two words"],
+        config_home: NodePath.join(home, ".codex-work"),
+      },
+    });
+    // A command other than the kind's default is an agent at that path too.
+    expect(launchOf("codex", { ...defaults, binaryPath: "codex-beta" }, "codex", []).agent).toEqual(
+      {
+        id: "codex",
+        path: "codex-beta",
+      },
+    );
+  });
+
+  it.live("an instance's launch options reach probe, open and generate", () => {
+    const calls: Array<{ method: string; agent: unknown; options: unknown }> = [];
+    const recorded = new Set(["probe", "open", "generate"]);
+    const recording = Layer.effect(
+      AnyagentRuntime,
+      Effect.map(AnyagentRuntime, ({ use }) => ({
+        use: <T>(f: (runtime: Runtime) => Promise<T>) =>
+          use((runtime) =>
+            f(
+              new Proxy(runtime, {
+                get: (target, key) => {
+                  const value = Reflect.get(target, key);
+                  if (typeof value !== "function") return value;
+                  return (...args: unknown[]) => {
+                    if (recorded.has(String(key)))
+                      calls.push({ method: String(key), agent: args[0], options: args[1] });
+                    return value.apply(target, args);
+                  };
+                },
+              }),
+            ),
+          ),
+      })),
+    ).pipe(Layer.provide(makeAnyagentRuntimeLayer({ bin: BIN, mock: titleScript() })));
+    return withRuntimeLayer(recording, () =>
+      Effect.gen(function* () {
+        const config = {
+          ...claude.defaultConfig(),
+          binaryPath: "/opt/claude-cli",
+          homePath: "/homes/work",
+          launchArgs: "--verbose",
+        };
+        const environment = [{ name: "FOO", value: "1", sensitive: false }];
+        const instance = yield* create(claude, "claudeAgent", yield* Scope.make(), true, {
+          config,
+          environment,
+        });
+        yield* instance.adapter.startSession({ threadId: A, cwd, runtimeMode: "full-access" });
+        yield* instance.textGeneration.generateThreadTitle({
+          cwd,
+          message: "the login page crashes",
+          modelSelection: { instanceId: instance.instanceId, model: "sonnet" },
+        });
+
+        const launch = { env: { FOO: "1" }, args: ["--verbose"], config_home: "/homes/work" };
+        expect(calls.map((c) => c.method).toSorted()).toEqual(["generate", "open", "probe"]);
+        for (const call of calls) {
+          expect(call.agent).toEqual({ id: "mock", path: "/opt/claude-cli" });
+          expect(call.options).toMatchObject(launch);
+        }
+      }),
+    );
+  });
+
   it.live("text generation asks anyagent for one reply and decodes its JSON", () =>
     withRuntime(titleScript(), () =>
       Effect.gen(function* () {
@@ -318,20 +403,21 @@ function withRuntimeLayer<A, E>(
 
 type Env = Effect.Services<ReturnType<typeof claude.create>> | Scope.Scope;
 
-/** One instance of `driver` in `scope`, enabled unless told otherwise. */
+/** One instance of `driver` in `scope`, enabled unless told otherwise, with the kind's default settings unless given. */
 function create(
   driver: typeof claude,
   id: string,
   scope: Scope.Closeable,
   enabled = true,
+  settings: Partial<Pick<Parameters<typeof driver.create>[0], "config" | "environment">> = {},
 ): Effect.Effect<ProviderInstance, ProviderDriverError, Env> {
   return driver
     .create({
       instanceId: ProviderInstanceId.make(id),
       displayName: undefined,
-      environment: [],
+      environment: settings.environment ?? [],
       enabled,
-      config: driver.defaultConfig(),
+      config: settings.config ?? driver.defaultConfig(),
     })
     .pipe(Effect.provideService(Scope.Scope, scope));
 }

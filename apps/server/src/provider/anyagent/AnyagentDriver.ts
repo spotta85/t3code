@@ -5,7 +5,12 @@
  *
  * @module AnyagentDriver
  */
-import type { CustomModelSetting, ProviderDriverKind } from "@t3tools/contracts";
+import type {
+  CustomModelSetting,
+  ProviderDriverKind,
+  ProviderInstanceEnvironment,
+} from "@t3tools/contracts";
+import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import { type AgentDetails, AnyagentError } from "anyagent-ts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -17,6 +22,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import type * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import type { ServerConfig } from "../../config.ts";
+import { expandHomePath } from "../../pathExpansion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { withInstanceIdentity } from "../Drivers/instanceIdentity.ts";
 import { ProviderDriverError } from "../Errors.ts";
@@ -27,6 +33,7 @@ import {
   type ProviderDriver,
   type ProviderInstance,
 } from "../ProviderDriver.ts";
+import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import {
   enrichProviderSnapshotWithVersionAdvisory,
   makeCachedProviderMaintenanceResolution,
@@ -39,15 +46,17 @@ import {
   makeProviderSnapshotSettingsSource,
 } from "../providerUpdateSettings.ts";
 import { makeAnyagentAdapter } from "./AnyagentAdapter.ts";
-import { AnyagentRuntime } from "./AnyagentRuntime.ts";
+import { AnyagentRuntime, type Launch } from "./AnyagentRuntime.ts";
 import { type AgentProbe, openableOptions, toServerProviderSnapshot } from "./AnyagentSnapshot.ts";
 import { makeAnyagentTextGeneration } from "./AnyagentTextGeneration.ts";
 
-/** The settings fields every built-in kind shares; the rest of each kind's settings is ignored. */
+/** The settings fields the driver reads (`homePath`, `launchArgs`: some kinds only); the rest are ignored. */
 export interface AnyagentSettings {
   readonly enabled: boolean;
   readonly binaryPath: string;
   readonly customModels: ReadonlyArray<CustomModelSetting>;
+  readonly homePath?: string;
+  readonly launchArgs?: string;
 }
 
 /** What stays per kind: the name, the settings form, and how the agent CLI updates. */
@@ -82,7 +91,7 @@ export const makeAnyagentDriver = (
   metadata: { displayName: spec.displayName, supportsMultipleInstances: true },
   configSchema: spec.settings,
   defaultConfig: () => decodeDefaults(spec.settings),
-  create: ({ instanceId, displayName, accentColor, enabled, config }) =>
+  create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
       const { use } = yield* AnyagentRuntime;
       const serverSettings = yield* ServerSettingsService;
@@ -90,10 +99,11 @@ export const makeAnyagentDriver = (
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
+      const launch = launchOf(agent, config, decodeDefaults(spec.settings).binaryPath, environment);
       // The newest successful probe: the adapter's capabilities and the options `open` may set.
       let latest: AgentDetails | null = null;
       const probe: Effect.Effect<AgentProbe | undefined> = enabled
-        ? Effect.promise(() => probeAgent(use, agent)).pipe(
+        ? Effect.promise(() => probeAgent(use, agent, launch)).pipe(
             Effect.tap((result) =>
               Effect.sync(() => {
                 if ("details" in result) latest = result.details;
@@ -179,13 +189,38 @@ export const makeAnyagentDriver = (
         accentColor,
         enabled,
         snapshot,
-        adapter: yield* makeAnyagentAdapter(kind, agent, () => latest),
-        textGeneration: yield* makeAnyagentTextGeneration(kind, agent, () =>
+        adapter: yield* makeAnyagentAdapter(kind, launch, () => latest),
+        textGeneration: yield* makeAnyagentTextGeneration(kind, launch, () =>
           openableOptions(latest),
         ),
       } satisfies ProviderInstance;
     }),
 });
+
+/**
+ * What an instance's settings give every call: the agent at `binaryPath` when that is not the kind's
+ * default command, the instance's environment, `launchArgs` split like a shell, and `homePath`.
+ */
+export function launchOf(
+  agent: string,
+  config: AnyagentSettings,
+  defaultBinary: string,
+  environment: ProviderInstanceEnvironment,
+): Launch {
+  const binary = config.binaryPath.trim();
+  // Only the instance's own variables: the agent inherits the server's environment already.
+  const env = mergeProviderInstanceEnvironment(environment, {}) as Record<string, string>;
+  const args = tokenizeCliArgs(config.launchArgs);
+  const home = expandHomePath(config.homePath?.trim() ?? "");
+  return {
+    agent: binary && binary !== defaultBinary ? { id: agent, path: expandHomePath(binary) } : agent,
+    options: {
+      ...(Object.keys(env).length > 0 ? { env } : {}),
+      ...(args.length > 0 ? { args: [...args] } : {}),
+      ...(home ? { config_home: home } : {}),
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // HELPERS
@@ -195,13 +230,14 @@ export const makeAnyagentDriver = (
 const ANYAGENT_BIN_HINT =
   " (anyagent binary not found: set ANYAGENT_BIN to it, see docs/anyagent-port.md)";
 
-/** Probes the agent; a failure is a result: a missing agent carries anyagent's install hint, anything else its error. */
+/** Probes the agent; a failure is a result: a missing agent carries an install hint, anything else its error. */
 async function probeAgent(
   use: AnyagentRuntime["Service"]["use"],
   agent: string,
+  { agent: ref, options }: Launch,
 ): Promise<AgentProbe> {
   try {
-    return { details: await use((runtime) => runtime.probe(agent)) };
+    return { details: await use((runtime) => runtime.probe(ref, options)) };
   } catch (cause) {
     // A plain Error here is `anyagent serve` failing to start (missing binary, spawn error).
     const error =
@@ -211,6 +247,9 @@ async function probeAgent(
           ? cause.message +
             ((cause as NodeJS.ErrnoException).code === "ENOENT" ? ANYAGENT_BIN_HINT : "")
           : String(cause);
+    // The agent at the instance's `binaryPath` would not start: that path has no agent.
+    if (cause instanceof AnyagentError && cause.kind === "SpawnFailed")
+      return { error, installHint: `${agent} is not installed: ${cause.message}` };
     if (!(cause instanceof AnyagentError && cause.kind === "NotInstalled")) return { error };
     const report = await use((runtime) => runtime.discover()).catch(() => undefined);
     const missing = report?.missing.find((m) => m.id === agent);
