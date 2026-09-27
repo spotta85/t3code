@@ -117,13 +117,7 @@ export const makeAnyagentAdapter = (
         for (; !read.done; read = yield* nextEvent(stream)) {
           // claude asks to leave plan mode right after its plan: T3 keeps the plan and waits for "Implement plan".
           const exit = planExitRequest(t, read.value);
-          if (exit) {
-            const choice = permissionChoice("decline", exit.options);
-            yield* Effect.ignore(
-              call(t.threadId, "answer", () => t.session.answer(exit.id, { Permission: choice })),
-            );
-            continue;
-          }
+          if (exit && (yield* declined(t, exit))) continue;
           yield* Queue.offerAll(events, onEvent(kind, t, read.value));
         }
         const current = threads.get(t.threadId);
@@ -134,6 +128,18 @@ export const makeAnyagentAdapter = (
           sessionExitedEvents(context(kind, t), read.error, yield* nowIso),
         );
       });
+
+    /** Declines the agent's exit-plan request; false when it offers no decline or the answer fails, so T3 shows it. */
+    const declined = (t: Thread, request: PermissionRequest) => {
+      const choice = permissionChoice("decline", request.options);
+      if (!request.options.includes(choice)) return Effect.succeed(false);
+      return call(t.threadId, "answer", () =>
+        t.session.answer(request.id, { Permission: choice }),
+      ).pipe(
+        Effect.as(true),
+        Effect.catch(() => Effect.succeed(false)),
+      );
+    };
 
     /** Sets the session's `mode` and waits until its info shows it; a rejected change never does, so fail after 10 s. */
     const setMode = (t: Thread, mode: ConfigValue) =>

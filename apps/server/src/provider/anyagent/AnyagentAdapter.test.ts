@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
@@ -360,6 +361,23 @@ describe("AnyagentAdapter over the mock binary", () => {
       ),
   );
 
+  it.live("an exit-plan request with no decline choice is shown to the user instead", () =>
+    run(allowOnlyPlanExit(), (adapter, waitFor, _seen, _opened, answered) =>
+      Effect.gen(function* () {
+        yield* adapter.startSession({ threadId: A, cwd, runtimeMode: "approval-required" });
+        const plan = yield* adapter.sendTurn({
+          threadId: A,
+          input: "plan",
+          interactionMode: "plan",
+        });
+        yield* waitFor((e) => e.type === "request.opened" && e.turnId === plan.turnId);
+        yield* adapter.respondToRequest(A, ApprovalRequestId.make("exit-1"), "accept");
+        yield* waitFor((e) => e.type === "turn.completed" && e.turnId === plan.turnId);
+        expect(answered()).toEqual([{ request: "exit-1", answer: { Permission: "AllowOnce" } }]);
+      }),
+    ),
+  );
+
   it.live("a plan turn on an agent whose mode offers no plan fails typed", () =>
     run("turn", (adapter) =>
       Effect.gen(function* () {
@@ -615,7 +633,7 @@ type WaitFor = (match: (e: ProviderRuntimeEvent) => boolean) => Effect.Effect<Pr
 type Answered = { readonly request: string; readonly answer: Answer };
 
 /**
- * Runs `body` against an adapter over `anyagent serve --mock <script>.json`.
+ * Runs `body` against an adapter over `anyagent serve --mock <script>.json` (or a script file's path).
  * Every event the adapter emits is collected; `waitFor` polls them and, after
  * 5 s, dies listing what it saw. `opened` lists the options of every `open` sent, `answered` every answer.
  * `mcpTransports` overrides the mock's probe (it advertises none); `kind` replaces claudeAgent, `agent` the mock,
@@ -643,7 +661,9 @@ function run<A, E>(
   const answers: Answered[] = [];
   const mock = makeAnyagentRuntimeLayer({
     bin: BIN,
-    mock: NodePath.join(ANYAGENT, `packages/mock-scripts/${script}.json`),
+    mock: script.endsWith(".json")
+      ? script
+      : NodePath.join(ANYAGENT, `packages/mock-scripts/${script}.json`),
   });
   const layer = Layer.mergeAll(
     Layer.effect(
@@ -708,6 +728,17 @@ function run<A, E>(
       () => answers,
     );
   }).pipe(Effect.scoped, Effect.provide(layer));
+}
+
+/** plan-exit.json with an exit-plan request that offers only AllowOnce, written to one fixed temp file. */
+function allowOnlyPlanExit(): string {
+  const script = JSON.parse(
+    NodeFS.readFileSync(NodePath.join(ANYAGENT, "packages/mock-scripts/plan-exit.json"), "utf8"),
+  );
+  script.turns[0][1].Emit.RequestOpened.Permission.options = ["AllowOnce"];
+  const file = NodePath.join(NodeOS.tmpdir(), "t3-anyagent-plan-exit-allow-once.json");
+  NodeFS.writeFileSync(file, JSON.stringify(script));
+  return file;
 }
 
 /** `runtime` with every `open`'s options pushed to `opens`, and every answer its sessions send to `answers`. */
