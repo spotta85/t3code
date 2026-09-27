@@ -295,7 +295,9 @@ async function toolDiff(ctx: Ctx): Promise<string> {
   const t = await openThread(ctx, "tool+diff");
   const turn = await runTurn(ctx, t, WRITE);
   const tools = activities(t, turn.from).filter((a) => a.kind.startsWith("tool."));
-  const naming = tools.filter((a) => JSON.stringify(a.payload).includes(FILE));
+  // T3 cuts an activity's detail at 180 chars, so a long path may lose the file name; T3's tool item keeps it.
+  const items = (await flushedProviderEvents(ctx, t)).filter((e) => e.type === "item.completed");
+  const naming = [...tools, ...items].filter((a) => JSON.stringify(a.payload).includes(FILE));
   const diffs = t.events.items
     .slice(turn.from)
     .filter((e) => e.type === "thread.turn-diff-completed")
@@ -306,7 +308,8 @@ async function toolDiff(ctx: Ctx): Promise<string> {
     `no tool activity names ${FILE} (${tools.length} tool activities: ${tools.map((a) => a.summary).join(", ")})`,
   );
   expect(fileHas(t.dir, "hello"), `${FILE} missing or wrong after the turn`);
-  return `${naming.length} tool activit(ies) name ${FILE} (${naming[0]!.kind} ${quote(naming[0]!.summary)}), file exists, turn diff files [${diffs.join(", ")}]`;
+  const first = naming[0]!;
+  return `${naming.length} tool activit(ies) or item(s) name ${FILE} (${first.kind ?? first.type} ${quote(first.summary ?? first.payload.title)}), file exists, turn diff files [${diffs.join(", ")}]`;
 }
 
 /** Ask mode: the write asks, a second turn queues behind it; approve, both turns complete, the file lands. */
