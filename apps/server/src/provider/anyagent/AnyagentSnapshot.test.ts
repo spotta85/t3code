@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 import { ProviderDriverKind, ProviderInstanceId, ServerProvider } from "@t3tools/contracts";
-import type { AgentDetails } from "anyagent-ts";
+import type { AgentDetails, ConfigOption } from "anyagent-ts";
 
 import { anyagentOptionId, selectedOptions, toServerProviderSnapshot } from "./AnyagentSnapshot.ts";
 
@@ -212,6 +212,58 @@ describe("toServerProviderSnapshot", () => {
       status: "disabled",
       message: "Claude is disabled in T3 Code settings.",
     });
+    expect(() => decode(stamp(snapshot))).not.toThrow();
+  });
+
+  it("each model gets its own options; the session's other options apply to every model", () => {
+    const select = (id: string, values: string[], current: string): ConfigOption => ({
+      id,
+      name: id,
+      kind: { Select: { choices: values.map((value) => ({ value, label: value })) } },
+      current,
+      live: true,
+    });
+    const fast: ConfigOption = {
+      id: "fast",
+      name: "Fast",
+      kind: "Boolean",
+      current: false,
+      live: true,
+    };
+    const model: ConfigOption = {
+      ...select("model", [], "big"),
+      kind: {
+        Select: {
+          choices: [
+            {
+              value: "big",
+              label: "Big",
+              options: [select("effort", ["low", "ultra"], "low"), fast],
+            },
+            { value: "small", label: "Small" },
+          ],
+        },
+      },
+    };
+    const details = {
+      ...claude,
+      config_options: [
+        model,
+        select("effort", ["low", "high"], "high"),
+        fast,
+        select("tier", ["a", "b"], "a"),
+      ],
+    };
+    const snapshot = toServerProviderSnapshot(KIND, { details }, settings, AT);
+    const descriptors = (slug: string) =>
+      snapshot.models.find((m) => m.slug === slug)?.capabilities?.optionDescriptors;
+    expect(descriptors("big")).toMatchObject([
+      { id: "effort", options: [{ id: "low", isDefault: true }, { id: "ultra" }] },
+      { id: "fastMode" },
+      { id: "tier" },
+    ]);
+    // A model without options of its own has none of the per-model ones (haiku has no effort).
+    expect(descriptors("small")?.map((d) => d.id)).toEqual(["tier"]);
     expect(() => decode(stamp(snapshot))).not.toThrow();
   });
 

@@ -6,7 +6,6 @@
  */
 import type {
   CustomModelSetting,
-  ModelCapabilities,
   ModelSelection,
   ProviderDriverKind,
   ProviderOptionDescriptor,
@@ -63,7 +62,7 @@ export function toServerProviderSnapshot(
     enabled: settings.enabled,
     checkedAt,
     models: providerModelsFromSettings(
-      agentModels(options, capabilities),
+      agentModels(kind, options),
       settings.customModels,
       capabilities,
     ),
@@ -189,19 +188,25 @@ function loginHint(auth: AuthStatus): string | undefined {
     : `Set ${method.EnvVar.name}.`;
 }
 
-/** The choices of the agent's `model` option as T3 models, the current one marked default. */
+/** The choices of the agent's `model` option as T3 models, the current one marked default, each with its own options. */
 function agentModels(
+  kind: ProviderDriverKind,
   options: ReadonlyArray<ConfigOption>,
-  capabilities: ModelCapabilities,
 ): ReadonlyArray<ServerProviderModel> {
   const model = options.find((o) => o.id === "model");
   if (!model || model.kind === "Boolean") return [];
-  return model.kind.Select.choices.map((choice) => ({
+  const choices = model.kind.Select.choices;
+  // An option some model carries itself (effort, fast) is per model; the session's others apply to every model.
+  const perModel = new Set(choices.flatMap((c) => (c.options ?? []).map((o) => o.id)));
+  const shared = options.filter((o) => !perModel.has(o.id));
+  return choices.map((choice) => ({
     slug: choice.value,
     name: choice.label.trim() || choice.value,
     isCustom: false,
     ...(choice.value === model.current ? { isDefault: true } : {}),
-    capabilities,
+    capabilities: createModelCapabilities({
+      optionDescriptors: optionDescriptors(kind, [...(choice.options ?? []), ...shared]),
+    }),
   }));
 }
 
