@@ -24,6 +24,7 @@ import * as DateTime from "effect/DateTime";
 import {
   AnyagentError,
   type Event,
+  type EventKind,
   type PermissionChoice,
   type PlanUsage,
   type Question,
@@ -88,6 +89,7 @@ const CHOICES: Record<PermissionChoice, ProviderApprovalOption> = {
  * | ToolUpdated Subagent     | also task.started (first seen), task.completed (done)     |
  * | ToolUpdated Denied       | also tool.denied, the reason from its output              |
  * | ToolOutputDelta          | content.delta (command_output)                            |
+ * | ToolProgress             | tool.progress; in a subagent, taskId is its tool          |
  * | PlanUpdated              | turn.plan.updated                                         |
  * | PlanProposed             | turn.proposed.completed                                   |
  * | RequestOpened Permission | request.opened, options = offered choices as T3 decisions |
@@ -104,8 +106,8 @@ const CHOICES: Record<PermissionChoice, ProviderApprovalOption> = {
  * |                          | from its usage (claude, codex, opencode, pi, native agy;  |
  * |                          | not ACP agents, antigravity's ACP server included)        |
  * | session error / end      | runtime.error + session.exited (sessionExitedEvents)      |
- * | (no source in anyagent)  | task.progress, turn.diff.updated, tool.progress,          |
- * |                          | model.rerouted: gaps.md rows                              |
+ * | (no source in anyagent)  | task.progress, turn.diff.updated, model.rerouted:         |
+ * |                          | gaps.md rows                                              |
  */
 export function toProviderRuntimeEvents(
   ctx: EventContext,
@@ -134,6 +136,7 @@ export function toProviderRuntimeEvents(
   if ("ToolOutputDelta" in k) {
     return [delta(base, k.ToolOutputDelta.tool_id, "command_output", k.ToolOutputDelta.text)];
   }
+  if ("ToolProgress" in k) return [toolProgress(base, k.ToolProgress, nested)];
   if ("MessageEnded" in k) {
     const id = k.MessageEnded.message_id;
     const itemType = ctx.textMessages.has(id) ? "assistant_message" : "reasoning";
@@ -309,6 +312,7 @@ type Base = {
   readonly createdAt: string;
   readonly turnId?: TurnId;
 };
+type ToolProgress = Extract<EventKind, { ToolProgress: unknown }>["ToolProgress"];
 
 const PLAN_STATUS = {
   Pending: "pending",
@@ -391,6 +395,26 @@ function taskEvents(base: Base, tool: ToolUpdate, seen: boolean): ProviderRuntim
     out.push({ ...extra(base, 2), type: "task.completed", payload: { ...task, status } });
   }
   return out;
+}
+
+/** A running tool's heartbeat; inside a subagent it also names that subagent's task. */
+function toolProgress(
+  base: Base,
+  progress: ToolProgress,
+  parent: string | null | undefined,
+): ProviderRuntimeEvent {
+  const summary = progress.message?.trim();
+  const elapsed = progress.elapsed_ms;
+  return {
+    ...base,
+    type: "tool.progress",
+    payload: {
+      toolUseId: progress.tool_id,
+      ...(summary ? { summary } : {}),
+      ...(elapsed != null ? { elapsedSeconds: elapsed / 1000 } : {}),
+      ...(parent ? { taskId: RuntimeTaskId.make(parent), parentToolUseId: parent } : {}),
+    },
+  };
 }
 
 /** A tool the agent's rules or mode refused without asking, as T3's tool.denied; the reason is its output. */

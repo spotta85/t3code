@@ -242,6 +242,29 @@ describe("toProviderRuntimeEvents", () => {
     ]);
   });
 
+  it("ToolProgress -> tool.progress; inside a subagent it names the subagent's task", () => {
+    const progress = { tool_id: "tool-1", message: " calling search ", elapsed_ms: 2500 };
+    expect(map({ ToolProgress: progress })).toEqual([
+      {
+        ...base,
+        eventId: "k:7:0",
+        type: "tool.progress",
+        payload: { toolUseId: "tool-1", summary: "calling search", elapsedSeconds: 2.5 },
+      },
+    ]);
+    const nested = toProviderRuntimeEvents(context(), {
+      ...event({ ToolProgress: { tool_id: "tool-2" } }),
+      turn_info: { id: "t1", parent_tool_id: "task-1" },
+    });
+    expect(nested).toMatchObject([
+      {
+        type: "tool.progress",
+        payload: { toolUseId: "tool-2", taskId: "task-1", parentToolUseId: "task-1" },
+      },
+    ]);
+    decode(nested[0]);
+  });
+
   it("PlanUpdated -> turn.plan.updated", () => {
     const entries = [
       { text: "read", status: "Completed" as const },
