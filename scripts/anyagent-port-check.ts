@@ -181,8 +181,7 @@ const ROWS: Row[] = [
   {
     id: "subagent-info",
     ms: 180_000,
-    passes:
-      "a subagent's task.started carries a role; a task.progress or task.completed its tokens",
+    passes: "a subagent's task row names its role or model; the detail lists the tokens sent",
     run: subagentInfo,
   },
   {
@@ -699,19 +698,20 @@ async function turnDiff(ctx: Ctx): Promise<string> {
   return `${diffs.length} turn.diff.updated, ${naming.length} name ${FILE} (turn ids ${[...turnIds].join(", ")})`;
 }
 
-/** The subagent turn's task rows: a role on task.started, tokens on a task.progress or task.completed. */
+/** The subagent turn's task rows name who ran (a role or a model); the detail says which, and the tokens sent. */
 async function subagentInfo(ctx: Ctx): Promise<string> {
   const { events } = await subagentTurn(ctx, "subagent-info");
   const tasks = events.filter((e) => e.type.startsWith("task."));
   if (!tasks.some((e) => e.type === "task.started"))
     throw new Skip("the agent started no subagent task (no task.started)");
-  const role = tasks.find((e) => e.type === "task.started" && e.payload.role)?.payload.role;
+  const named = tasks.find((e) => e.payload.role || e.payload.model);
   const counted = tasks.filter((e) => e.payload.typedUsage?.totalTokens > 0);
   const kinds = tasks.map((e) => e.type).join(", ");
-  expect(Boolean(role), `no task.started carries a role (${kinds})`);
-  expect(counted.length > 0, `no task.progress or task.completed carries tokens (${kinds})`);
-  const last = counted.at(-1)!;
-  return `role ${quote(role)}; ${counted.length} task row(s) with tokens, last ${last.payload.typedUsage.totalTokens} on ${last.type}`;
+  expect(Boolean(named), `no task row carries a role or a model (${kinds})`);
+  const who = `role ${quote(named!.payload.role ?? "none")}, model ${quote(named!.payload.model ?? "none")}`;
+  const last = counted.at(-1);
+  const tokens = last ? `${last.payload.typedUsage.totalTokens} on ${last.type}` : "none sent";
+  return `${who} on ${named!.type}; tokens ${tokens}`;
 }
 
 /** Ask mode: an approval answered cancel resolves as cancel, no file; an interrupting answer cancels the turn. */

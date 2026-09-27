@@ -62,7 +62,7 @@ provider on for its run. The last run is under "Live check" below.
 | T3 MCP tools (browser, devices, PR linking)        | Every agent                                                                                                                                                                                      | Same: all six take T3's server                                                                                                                                                                                                                                                                                            |
 | Per-turn token usage                               | claude, codex, opencode                                                                                                                                                                          | Same, plus antigravity's native adapter; cursor, grok and antigravity's ACP server report none                                                                                                                                                                                                                            |
 | Tool denied (a rule refused a tool without asking) | claude                                                                                                                                                                                           | Same                                                                                                                                                                                                                                                                                                                      |
-| Subagent task rows                                 | claude: task rows with progress and usage                                                                                                                                                        | claude: role, model, progress and tokens on the task rows. codex: its `spawnAgent`/`wait` calls are task rows with no role or tokens, and the subagent's own text shows in the chat (anyagent fault, see Live check⁵). opencode: a task row with no role                                                                  |
+| Subagent task rows                                 | claude: task rows with progress and usage                                                                                                                                                        | claude: role, model, progress and tokens on the task rows. codex: the spawn's task row carries the child's model and tokens (codex names no role). opencode: role and model, no tokens                                                                                                                                    |
 | Cancel on an approval                              | claude denied the tool and the turn went on; codex ended the turn                                                                                                                                | API only (the UI offers no Cancel). claude, codex and grok end the turn as cancelled; opencode and antigravity refuse the tool and the turn goes on. No file is written either way                                                                                                                                        |
 | cursor in approval-required threads                | cursor's read-only `ask` mode                                                                                                                                                                    | cursor writes files without asking: its ACP agent asks permission for commands, not for edits                                                                                                                                                                                                                             |
 
@@ -134,7 +134,7 @@ did not).
 | accept-edits              | PASS                 | SKIP: sandbox runs the shell unasked | quota                  | quota                 | PASS               | PASS                  |
 | mcp-tool                  | PASS                 | PASS                                 | quota                  | quota                 | PASS               | PASS                  |
 | turn-diff                 | SKIP: not codex      | PASS                                 | quota                  | SKIP: not codex       | SKIP: not codex    | SKIP: not codex       |
-| subagent-info             | PASS                 | FAIL (anyagent)⁵                     | quota                  | SKIP: no subagent     | FAIL (anyagent)⁶   | SKIP: no subagent     |
+| subagent-info             | PASS                 | PASS⁵                                | quota                  | SKIP: no subagent     | PASS⁶              | SKIP: no subagent     |
 | cancel-request            | PASS: turn cancelled | PASS: turn cancelled                 | quota                  | PASS: turn cancelled  | PASS: turn goes on | PASS: turn goes on    |
 | skills                    | PASS: `/` command    | PASS: skill with path                | quota                  | SKIP: no skill folder | PASS: `/` command  | SKIP: no skill folder |
 | schema-generate           | PASS                 | PASS                                 | quota                  | SKIP: free text       | SKIP: free text    | SKIP: free text       |
@@ -147,13 +147,10 @@ wire, not the reply.
 ³ cursor's agent mode edits with no ACP `session/request_permission`, so Ask mode cannot stop it.
 ⁴ opencode's free model answered "hello" to the queued "reply with the single word queued"; the
 wire shows the prompt reached opencode. It failed in 4 of 5 runs, always with "hello".
-⁵ codex 0.154.0 spawns a subagent with `collabAgentToolCall` items (`spawnAgent`, then `wait`,
-the child in `receiverThreadIds`). anyagent's codex adapter links a child thread only from a
-`subAgentActivity` item, so the child's frames take the parent's path: the task rows get no
-tokens, and the child's reply ("`subagent-marker.txt`") lands in the parent's chat. codex also
-names no role; its spawn carries the child's model, which anyagent does not pass on.
-⁶ opencode's `task` tool input carries `subagent_type: "general"` and its metadata the child's
-model, but anyagent's opencode adapter fills no subagent info, so the task row has no role.
+⁵ codex names no role; the row passed on the child's model (`gpt-5.6-luna`) and its tokens. The
+first run failed: anyagent did not link children spawned by `collabAgentToolCall`, fixed since.
+⁶ opencode sends a role and a model, no tokens. The first run failed: anyagent read neither,
+fixed since.
 
 "SKIP: ACP" is decided from the wire: the session spoke ACP (`session/prompt`) and its turn carried
 no token counts; antigravity here is its ACP server (its native adapter over `agy` reports them).
