@@ -173,7 +173,8 @@ function logWarning(message: string, context: Record<string, unknown>): Effect.E
   return Effect.logWarning(message, context).pipe(Effect.annotateLogs({ scope: LOG_SCOPE }));
 }
 
-function resolveThreadSegment(raw: string | null | undefined): string {
+/** The file-name segment for a thread id; events without a thread share the global one. */
+export function resolveThreadSegment(raw: string | null | undefined): string {
   const normalized = typeof raw === "string" ? toSafeThreadAttachmentSegment(raw) : null;
   return normalized ?? GLOBAL_THREAD_SEGMENT;
 }
@@ -182,13 +183,15 @@ function resolveStreamLabel(stream: EventNdjsonStream): string {
   return stream === "native" ? "NTIVE" : stream === "orchestration" ? "ORCH" : "CANON";
 }
 
-function providerLogPrefix(filePath: string): string {
+/** The per-thread file prefix of a log path: `events.log` → `events.`. */
+export function providerLogPrefix(filePath: string): string {
   const basename = NodePath.basename(filePath);
   const extension = NodePath.extname(basename);
   return `${extension.length > 0 ? basename.slice(0, -extension.length) : basename}.`;
 }
 
-function providerLogPath(directory: string, prefix: string, threadSegment: string): string {
+/** A thread's log file in the store's directory: `<prefix><segment>.log`. */
+export function providerLogPath(directory: string, prefix: string, threadSegment: string): string {
   return NodePath.join(directory, `${prefix}${threadSegment}.log`);
 }
 

@@ -35,7 +35,7 @@ import * as Queue from "effect/Queue";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
-import { resolveAttachmentPath, toSafeThreadAttachmentSegment } from "../../attachmentStore.ts";
+import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { toolInstructions } from "../CodexDeveloperInstructions.ts";
@@ -44,6 +44,11 @@ import {
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
 } from "../Errors.ts";
+import {
+  providerLogPath,
+  providerLogPrefix,
+  resolveThreadSegment,
+} from "../Layers/EventNdjsonLogger.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
 import type { ProviderAdapterShape, ProviderThreadSnapshot } from "../Services/ProviderAdapter.ts";
@@ -552,11 +557,10 @@ function withDeviceShim(
   return McpProviderSession.withAgentDeviceEnvironment(base, mcp) as Record<string, string>;
 }
 
-/** The file anyagent records a thread's raw wire to: beside the native log, named like its per-thread files. */
-function wireLogPath(nativeLog: string, threadId: ThreadId): string | null {
-  const segment = toSafeThreadAttachmentSegment(threadId);
-  const prefix = NodePath.basename(nativeLog, NodePath.extname(nativeLog));
-  return segment && NodePath.join(NodePath.dirname(nativeLog), `${prefix}.${segment}.wire.log`);
+/** The file anyagent records a thread's raw wire to: the log store's own file for the thread, as `.wire`. */
+function wireLogPath(nativeLog: string, threadId: ThreadId): string {
+  const segment = `${resolveThreadSegment(threadId)}.wire`;
+  return providerLogPath(NodePath.dirname(nativeLog), providerLogPrefix(nativeLog), segment);
 }
 
 /** The session-level fields every mapped event carries. */
