@@ -27,13 +27,35 @@ const AGENTS: Record<string, AgentSpec> = {
     switchTo: "gpt-5.5",
     options: [{ id: "reasoningEffort", value: "low" }],
   },
+  cursor: { instanceId: "cursor", model: "default", switchTo: "gpt-5.4-mini", options: [] },
+  grok: { instanceId: "grok", model: "grok-4.7", switchTo: undefined, options: [] },
+  opencode: {
+    instanceId: "opencode",
+    model: "opencode/ling-3.0-flash-fin-free",
+    switchTo: "opencode/muse-spark-1.3-contributor-free",
+    options: [],
+  },
+  antigravity: {
+    instanceId: "antigravity",
+    model: "gemini-3.8-flash-low",
+    switchTo: "gemini-3.7-flash-low",
+    options: [],
+  },
 };
 
 const FILE = "port-check.txt";
 const MARKER = "subagent-marker.txt";
 const WRITE = `Create a file named ${FILE} containing exactly the word hello. Use your file tools. Do not verify afterwards.`;
 const PONG = "Reply with the single word pong. No tools.";
+const SHELL =
+  "Run exactly this shell command with your shell tool: echo accept-edits-check. Then reply with its output. No other tools.";
+const MCP =
+  "Call the list_thread_pull_requests tool of the t3-code MCP server once, with no arguments, then reply with just the word done. No other tools.";
+const PLAN =
+  "Plan how to add a README to this project. Do not write files. Do not ask me any questions; make reasonable assumptions.";
 const COUNT = "Count from 1 to 2000, one number per line. No other text. No tools.";
+/** Why cursor's Ask-mode rows are skipped (the wire shows its edits run with no session/request_permission). */
+const CURSOR_EDITS = "cursor's agent mode applies edits without asking (no ACP permission request)";
 
 /** The rows in run order: id, timeout, what passing means (printed by --dry-run), and the check. */
 const ROWS: Row[] = [
@@ -118,6 +140,37 @@ const ROWS: Row[] = [
     passes: "first turn on a 'New thread' gets a generated title (text generation)",
     run: generate,
   },
+  {
+    id: "usage-limits",
+    ms: 30_000,
+    passes: "the snapshot's usageLimits has a window or an unavailable reason; codex: resetCredits",
+    run: usageLimits,
+  },
+  {
+    id: "instructions",
+    ms: 90_000,
+    passes: "the thread's wire log shows T3's <runtime_info> going to the agent",
+    run: instructions,
+  },
+  {
+    id: "plan",
+    ms: 300_000,
+    passes:
+      "plan turn ends with a proposed plan, no approval, no file; the default turn after it replies",
+    run: plan,
+  },
+  {
+    id: "accept-edits",
+    ms: 300_000,
+    passes: "auto-accept-edits: the write asks nothing and lands; a shell command asks",
+    run: acceptEdits,
+  },
+  {
+    id: "mcp-tool",
+    ms: 180_000,
+    passes: "the agent calls T3's list_thread_pull_requests MCP tool and the call completes",
+    run: mcpTool,
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -157,11 +210,13 @@ async function main(): Promise<void> {
       const rpc = await connect(server.url, server.token, log);
       const ctx: Ctx = { agent, spec: specFor(agent), rpc, log, server, step: "" };
       const restore = await withTokenStreaming(ctx);
+      const disable = await withProviderEnabled(ctx);
       for (const row of rows) {
         const { outcome, reason } = await runRow(row, ctx);
         results.push({ agent, row: row.id, outcome, reason });
         console.log(`${agent.padEnd(7)} ${row.id.padEnd(13)} ${outcome.padEnd(4)} ${reason}`);
       }
+      await disable();
       await restore();
       rpc.close();
     }
@@ -188,10 +243,13 @@ async function runRow(row: Row, ctx: Ctx): Promise<{ outcome: Outcome; reason: s
     const reason = await Promise.race([row.run(ctx), timeout]);
     result = { outcome: "PASS", reason };
   } catch (error) {
+    const limit = accountLimit(ctx);
     result =
       error instanceof Skip
         ? { outcome: "SKIP", reason: error.message }
-        : { outcome: "FAIL", reason: error instanceof Error ? error.message : String(error) };
+        : limit
+          ? { outcome: "SKIP", reason: `the agent's account hit a limit: ${quote(limit)}` }
+          : { outcome: "FAIL", reason: error instanceof Error ? error.message : String(error) };
   } finally {
     clearTimeout(timer);
   }
@@ -253,6 +311,7 @@ async function toolDiff(ctx: Ctx): Promise<string> {
 
 /** Ask mode: the write asks, a second turn queues behind it; approve, both turns complete, the file lands. */
 async function permission(ctx: Ctx): Promise<string> {
+  if (ctx.agent === "cursor") throw new Skip(CURSOR_EDITS);
   const t = await openThread(ctx, "permission", { runtimeMode: "approval-required" });
   const from = await sendTurn(ctx, t, WRITE);
   const asked = await waitActivity(ctx, t, from, "approval.requested", 120_000);
@@ -271,6 +330,7 @@ async function permission(ctx: Ctx): Promise<string> {
 
 /** Ask mode: every approval is declined; the turn completes and no file is written. */
 async function deny(ctx: Ctx): Promise<string> {
+  if (ctx.agent === "cursor") throw new Skip(CURSOR_EDITS);
   const t = await openThread(ctx, "deny", { runtimeMode: "approval-required" });
   const from = await sendTurn(ctx, t, WRITE);
   await waitActivity(ctx, t, from, "approval.requested", 120_000);
@@ -337,12 +397,13 @@ async function subagent(ctx: Ctx): Promise<string> {
 async function modelSwitch(ctx: Ctx): Promise<string> {
   if (!ctx.server.baseDir)
     throw new Skip("needs the server's base dir (T3's provider event log); run without --url");
-  const t = await openThread(ctx, "model-switch");
-  const first = await runTurn(ctx, t, PONG);
-  expect(first.status === "ready", `first turn ended ${first.status}: ${first.lastError}`);
   const target =
     ctx.spec.switchTo ??
     (await provider(ctx)).models.find((m: Obj) => m.slug !== ctx.spec.model)?.slug;
+  if (!target) throw new Skip(`the agent offers one model (${ctx.spec.model})`);
+  const t = await openThread(ctx, "model-switch");
+  const first = await runTurn(ctx, t, PONG);
+  expect(first.status === "ready", `first turn ended ${first.status}: ${first.lastError}`);
   const second = await runTurn(ctx, t, PONG, { modelSelection: selection(ctx, target) });
   expect(second.status === "ready", `switched turn ended ${second.status}: ${second.lastError}`);
   const configured = (await flushedProviderEvents(ctx, t)).filter(
@@ -477,6 +538,8 @@ async function rollback(ctx: Ctx): Promise<string> {
 
 /** After a turn, a context-window.updated activity must carry non-zero input tokens. */
 async function usage(ctx: Ctx): Promise<string> {
+  if (["cursor", "grok", "antigravity"].includes(ctx.agent))
+    throw new Skip("an ACP agent: its wire reports no per-turn token counts");
   const t = await openThread(ctx, "usage");
   const turn = await runTurn(ctx, t, PONG);
   expect(turn.status === "ready", `turn ended ${turn.status}: ${turn.lastError}`);
@@ -516,6 +579,96 @@ async function generate(ctx: Ctx): Promise<string> {
       .call("server.updateSettings", { patch: { textGenerationModelSelection: before } })
       .catch(() => {});
   }
+}
+
+/** The provider snapshot carries usage limits: windows, or why there are none; codex also its banked resets. */
+async function usageLimits(ctx: Ctx): Promise<string> {
+  const limits = (await provider(ctx)).usageLimits as Obj | undefined;
+  expect(limits !== undefined, "no usageLimits on the provider snapshot");
+  if (limits!.unavailable)
+    return `unavailable: ${limits!.unavailable.reason} ${quote(limits!.unavailable.message)}`;
+  expect(limits!.windows.length > 0, "usageLimits has no window and no unavailable reason");
+  const credits = limits!.resetCredits;
+  expect(ctx.agent !== "codex" || credits !== undefined, "codex usageLimits has no resetCredits");
+  const windows = limits!.windows.map((w: Obj) => `${w.id} ${w.usedPercent}%`).join(", ");
+  return `${windows}${credits ? `; resetCredits ${credits.availableCount}` : ""}`;
+}
+
+/** A turn's wire log shows T3's runtime instructions leaving for the agent, and in which frame field. */
+async function instructions(ctx: Ctx): Promise<string> {
+  if (!ctx.server.baseDir)
+    throw new Skip("needs the server's base dir (the wire log); run without --url");
+  const t = await openThread(ctx, "instructions");
+  const turn = await runTurn(ctx, t, PONG);
+  expect(turn.status === "ready", `turn ended ${turn.status}: ${turn.lastError}`);
+  const frames = wireFrames(ctx, t);
+  const sent = frames.find(
+    (f) => f.dir === "out" && JSON.stringify(f.frame).includes("<runtime_info>"),
+  );
+  expect(sent !== undefined, `no outgoing frame of ${frames.length} carries <runtime_info>`);
+  const frame = sent!.frame;
+  const kind = frame.method ?? frame.request?.subtype ?? frame.type ?? "frame";
+  return `<runtime_info> sent in ${kind} at ${pathTo(frame, "<runtime_info>")}`;
+}
+
+/** Plan mode set the way the UI does: the plan turn ends with the plan, asks nothing, writes nothing; a default turn follows. */
+async function plan(ctx: Ctx): Promise<string> {
+  if ((await provider(ctx)).showInteractionModeToggle !== true)
+    throw new Skip("the snapshot hides the plan toggle (no `mode` choice plan)");
+  const t = await openThread(ctx, "plan");
+  const mode = (interactionMode: string) =>
+    dispatch(ctx, { type: "thread.interaction-mode.set", threadId: t.threadId, interactionMode });
+  await mode("plan");
+  const planned = await runTurn(ctx, t, PLAN);
+  const asked = activities(t, planned.from).filter((a) => a.kind === "approval.requested");
+  await mode("default");
+  const next = await runTurn(ctx, t, PONG);
+  const events = await flushedProviderEvents(ctx, t);
+  const markdown = events.find((e) => e.type === "turn.proposed.completed")?.payload.planMarkdown;
+  const modes = events.map((e) => e.payload?.config?.mode).filter(Boolean);
+  expect(planned.status === "ready", `plan turn ended ${planned.status}: ${planned.lastError}`);
+  expect(Boolean(markdown?.trim()), "no turn.proposed.completed with markdown");
+  expect(asked.length === 0, `${asked.length} approval(s) surfaced in the plan turn`);
+  expect(!NodeFS.existsSync(NodePath.join(t.dir, "README.md")), "README.md was written");
+  expect(next.status === "ready" && /pong/i.test(next.text), `default turn: ${quote(next.text)}`);
+  return `plan of ${markdown.length} chars, no approval, no file; modes ${modes.join(">")}; default turn replied ${quote(next.text)}`;
+}
+
+/** auto-accept-edits: the file write lands without asking; a shell command still asks (accepted). */
+async function acceptEdits(ctx: Ctx): Promise<string> {
+  const t = await openThread(ctx, "accept-edits", { runtimeMode: "auto-accept-edits" });
+  const write = await sendTurn(ctx, t, WRITE);
+  expect(!(await asks(ctx, t, write)), "the edit surfaced an approval");
+  expect(fileHas(t.dir, "hello"), `${FILE} missing after the write turn`);
+  const shell = await sendTurn(ctx, t, SHELL);
+  if (!(await asks(ctx, t, shell))) {
+    const events = await flushedProviderEvents(ctx, t);
+    const mode = events.findLast((e) => e.payload?.config?.mode)?.payload.config.mode;
+    throw new Skip(`${ctx.agent} ran the shell command without asking (mode ${mode ?? "none"})`);
+  }
+  const end = await settle(ctx, t, shell, { decision: "accept" });
+  expect(end.status === "ready", `shell turn settled ${end.status}: ${end.lastError}`);
+  return `edit landed with no approval; shell command asked, accepted, reply ${quote(end.text)}`;
+}
+
+/** The agent calls T3's own MCP tool list_thread_pull_requests; T3's canonical log shows the call completed. */
+async function mcpTool(ctx: Ctx): Promise<string> {
+  if (!ctx.server.baseDir) throw new Skip("needs T3's provider event log; run without --url");
+  const t = await openThread(ctx, "mcp-tool");
+  const turn = await runTurn(ctx, t, MCP);
+  const calls = (await flushedProviderEvents(ctx, t)).filter(
+    (e) =>
+      e.type === "item.completed" &&
+      JSON.stringify(e.payload).includes("list_thread_pull_requests"),
+  );
+  if (calls.length === 0 && !JSON.stringify(wireFrames(ctx, t)).includes("t3-code"))
+    throw new Skip("T3's MCP server was never declared to the agent (no HTTP MCP transport)");
+  expect(turn.status === "ready", `turn ended ${turn.status}: ${turn.lastError}`);
+  expect(calls.length > 0, `no completed call of the tool; reply ${quote(turn.text)}`);
+  const call = calls[0]!.payload;
+  expect(call.status === "completed", `the tool call ended ${call.status}`);
+  const answered = JSON.stringify(call.data ?? {}).includes("pullRequests");
+  return `list_thread_pull_requests ${call.status} (${call.itemType})${answered ? ", T3's answer (pullRequests) in the item" : ""}; reply ${quote(turn.text)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -716,6 +869,13 @@ async function waitActivity(
   return { a: e.payload.activity, index };
 }
 
+/** Whether the turn sent at `from` surfaced an approval before it ended. */
+async function asks(ctx: Ctx, t: Thread, from: number): Promise<boolean> {
+  const asked = await waitActivity(ctx, t, from, "approval.requested", 120_000).catch((e) => e);
+  if (asked instanceof Error && !asked.message.includes("without approval.requested")) throw asked;
+  return !(asked instanceof Error);
+}
+
 /** Stops the row's session and ends its subscription; dumps T3's canonical provider events for the thread. */
 async function cleanupRow(ctx: Ctx): Promise<void> {
   const t = ctx.thread;
@@ -789,6 +949,30 @@ function providerEvents(ctx: Ctx, t: Thread): Obj[] {
   return out;
 }
 
+/** The thread's raw wire recording beside T3's provider log, one `{ dir, frame }` per line. */
+function wireFrames(ctx: Ctx, t: Thread): Obj[] {
+  if (!ctx.server.baseDir) return [];
+  const file = NodePath.join(
+    ctx.server.baseDir,
+    "userdata/logs/provider",
+    `events.${t.threadId}.wire.log`,
+  );
+  if (!NodeFS.existsSync(file)) return [];
+  const lines = NodeFS.readFileSync(file, "utf8").split("\n").filter(Boolean);
+  return lines.map((line) => JSON.parse(line) as Obj);
+}
+
+/** The dotted path to the first string in `value` that contains `needle` ("params.developerInstructions"). */
+function pathTo(value: unknown, needle: string, at = ""): string | undefined {
+  if (typeof value === "string") return value.includes(needle) ? at || "(frame)" : undefined;
+  if (typeof value !== "object" || value === null) return undefined;
+  for (const [key, inner] of Object.entries(value)) {
+    const found = pathTo(inner, needle, at ? `${at}.${key}` : key);
+    if (found) return found;
+  }
+  return undefined;
+}
+
 /** providerEvents after T3's event log has flushed (it writes in 1s batches). */
 async function flushedProviderEvents(ctx: Ctx, t: Thread): Promise<Obj[]> {
   await sleep(1500);
@@ -804,6 +988,19 @@ const isAssistant = (e: Obj) => e.type === "thread.message-sent" && e.payload.ro
 // ---------------------------------------------------------------------------
 // SMALL HELPERS
 // ---------------------------------------------------------------------------
+
+/** The row thread's reply or error when it says the account hit a quota or rate limit (the agent's, not T3's). */
+function accountLimit(ctx: Ctx): string | undefined {
+  const t = ctx.thread;
+  if (!t) return undefined;
+  const said = [
+    textAfter(t, 0),
+    ...t.events.items.filter(isSessionSet).map((e) => String(e.payload.session.lastError ?? "")),
+  ];
+  return said.find((text) =>
+    /upgrade your plan|spend limit|usage limit|rate[_ ]limit|out of (credits|quota)/i.test(text),
+  );
+}
 
 /** The agent's provider entry from server.getConfig. */
 async function provider(ctx: Ctx): Promise<Obj> {
@@ -851,6 +1048,20 @@ async function withTokenStreaming(ctx: Ctx): Promise<() => Promise<void>> {
   return async () => {
     await ctx.rpc.call("server.updateSettings", { patch: { responseStreamingMode: before } });
   };
+}
+
+/** Turns the agent's provider on when settings have it off (cursor, grok, opencode, antigravity) and waits for its probe; returns the undo. */
+async function withProviderEnabled(ctx: Ctx): Promise<() => Promise<void>> {
+  const key = ctx.spec.instanceId;
+  const settings = (await ctx.rpc.call("server.getSettings", {})) as Obj;
+  if (settings.providers?.[key]?.enabled !== false) return async () => {};
+  const enable = (enabled: boolean) =>
+    ctx.rpc.call("server.updateSettings", { patch: { providers: { [key]: { enabled } } } });
+  ctx.log.line(`providers.${key}.enabled false -> true`);
+  await enable(true);
+  for (let i = 0; i < 120 && ["disabled", "warning"].includes((await provider(ctx)).status); i++)
+    await sleep(1000);
+  return () => enable(false).then(() => {});
 }
 
 /** The spec for `agent`; an agent not in AGENTS uses its own name as instance id and the default model. */
