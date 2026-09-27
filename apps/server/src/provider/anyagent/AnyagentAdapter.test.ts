@@ -1,5 +1,4 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
@@ -576,7 +575,8 @@ describe("AnyagentAdapter over the mock binary", () => {
 
   it.live("with T3's native log on, each thread's wire is recorded beside it; off, none is", () =>
     Effect.gen(function* () {
-      const dir = NodeFS.mkdtempSync(NodePath.join(cwd, "t3-wire-"));
+      // A path only: the mock agent has no wire, so nothing is written there.
+      const dir = "/t3-logs/provider";
       const start = (adapter: Adapter, threadId: ThreadId) =>
         adapter.startSession({ threadId, cwd, runtimeMode: "approval-required" });
       yield* run(
