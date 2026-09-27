@@ -91,6 +91,7 @@ const CHOICES: Record<PermissionChoice, ProviderApprovalOption> = {
  * | ToolOutputDelta          | content.delta (command_output)                            |
  * | ToolProgress             | tool.progress; in a subagent, taskId is its tool          |
  * | TurnDiff                 | turn.diff.updated (the turn's whole diff so far)          |
+ * | ModelRerouted            | model.rerouted, plus one runtime.warning saying so        |
  * | PlanUpdated              | turn.plan.updated                                         |
  * | PlanProposed             | turn.proposed.completed                                   |
  * | RequestOpened Permission | request.opened, options = offered choices as T3 decisions |
@@ -107,7 +108,7 @@ const CHOICES: Record<PermissionChoice, ProviderApprovalOption> = {
  * |                          | from its usage (claude, codex, opencode, pi, native agy;  |
  * |                          | not ACP agents, antigravity's ACP server included)        |
  * | session error / end      | runtime.error + session.exited (sessionExitedEvents)      |
- * | (no source in anyagent)  | task.progress, model.rerouted: gaps.md rows               |
+ * | (no source in anyagent)  | task.progress: gaps.md row                                |
  */
 export function toProviderRuntimeEvents(
   ctx: EventContext,
@@ -140,6 +141,7 @@ export function toProviderRuntimeEvents(
   if ("TurnDiff" in k) {
     return [{ ...base, type: "turn.diff.updated", payload: { unifiedDiff: k.TurnDiff.unified } }];
   }
+  if ("ModelRerouted" in k) return modelRerouted(base, k.ModelRerouted);
   if ("MessageEnded" in k) {
     const id = k.MessageEnded.message_id;
     const itemType = ctx.textMessages.has(id) ? "assistant_message" : "reasoning";
@@ -316,6 +318,7 @@ type Base = {
   readonly turnId?: TurnId;
 };
 type ToolProgress = Extract<EventKind, { ToolProgress: unknown }>["ToolProgress"];
+type ModelRerouted = Extract<EventKind, { ModelRerouted: unknown }>["ModelRerouted"];
 
 const PLAN_STATUS = {
   Pending: "pending",
@@ -418,6 +421,17 @@ function toolProgress(
       ...(parent ? { taskId: RuntimeTaskId.make(parent), parentToolUseId: parent } : {}),
     },
   };
+}
+
+/** A reroute as T3's model.rerouted, plus the one warning the user sees (T3 shows no model.rerouted). */
+function modelRerouted(base: Base, reroute: ModelRerouted): ProviderRuntimeEvent[] {
+  const { from, to } = reroute;
+  const reason = reroute.reason?.trim() || "unknown";
+  const message = `Model rerouted from ${from} to ${to} (${reason})`;
+  return [
+    { ...base, type: "model.rerouted", payload: { fromModel: from, toModel: to, reason } },
+    { ...extra(base, 1), type: "runtime.warning", payload: { message } },
+  ];
 }
 
 /** A tool the agent's rules or mode refused without asking, as T3's tool.denied; the reason is its output. */

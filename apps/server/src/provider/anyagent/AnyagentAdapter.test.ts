@@ -78,6 +78,35 @@ describe("AnyagentAdapter over the mock binary", () => {
     ),
   );
 
+  it.live("a turn's tool progress, diff and model reroute reach T3; the reroute warns once", () =>
+    run("live-events", (adapter, waitFor, seen) =>
+      Effect.gen(function* () {
+        yield* adapter.startSession({ threadId: A, cwd, runtimeMode: "full-access" });
+        const { turnId } = yield* adapter.sendTurn({ threadId: A, input: "hi" });
+        yield* waitFor((e) => e.type === "turn.completed" && e.turnId === turnId);
+        expect(summary(seen().filter((e) => e.turnId === turnId))).toEqual([
+          "turn.started",
+          "item.started",
+          "tool.progress",
+          "turn.diff.updated",
+          "model.rerouted",
+          "runtime.warning",
+          "item.completed:mcp_tool_call",
+          "turn.completed:completed",
+        ]);
+        expect(seen().find((e) => e.type === "tool.progress")).toMatchObject({
+          payload: { toolUseId: "tool-1", summary: "searching", elapsedSeconds: 1.5 },
+        });
+        expect(seen().find((e) => e.type === "turn.diff.updated")).toMatchObject({
+          payload: { unifiedDiff: expect.stringContaining("+new") },
+        });
+        expect(seen().find((e) => e.type === "model.rerouted")).toMatchObject({
+          payload: { fromModel: "gpt-5.5", toModel: "gpt-5.5-mini" },
+        });
+      }),
+    ),
+  );
+
   it.live("interrupt ends the turn cancelled and resolves the open request", () =>
     run("turn", (adapter, waitFor) =>
       Effect.gen(function* () {

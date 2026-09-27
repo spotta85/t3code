@@ -272,6 +272,28 @@ describe("toProviderRuntimeEvents", () => {
     ]);
   });
 
+  it("ModelRerouted -> model.rerouted plus one runtime.warning; no reason reads as unknown", () => {
+    const reroute = { from: "gpt-5.5", to: "gpt-5.5-mini", reason: "highRiskCyberActivity" };
+    expect(map({ ModelRerouted: reroute })).toEqual([
+      {
+        ...base,
+        eventId: "k:7:0",
+        type: "model.rerouted",
+        payload: { fromModel: "gpt-5.5", toModel: "gpt-5.5-mini", reason: "highRiskCyberActivity" },
+      },
+      {
+        ...base,
+        eventId: "k:7:1",
+        type: "runtime.warning",
+        payload: { message: "Model rerouted from gpt-5.5 to gpt-5.5-mini (highRiskCyberActivity)" },
+      },
+    ]);
+    expect(map({ ModelRerouted: { from: "a", to: "b" } })).toMatchObject([
+      { payload: { reason: "unknown" } },
+      { payload: { message: "Model rerouted from a to b (unknown)" } },
+    ]);
+  });
+
   it("PlanUpdated -> turn.plan.updated", () => {
     const entries = [
       { text: "read", status: "Completed" as const },
