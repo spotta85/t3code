@@ -354,7 +354,8 @@ function toolEvent(
   const running = tool.status === "Pending" || tool.status === "Running";
   const type = !running ? "item.completed" : seen ? "item.updated" : "item.started";
   const title = tool.title.trim();
-  const detail = inputText(tool.input);
+  // An input with no text (antigravity's edits) still names its file in `locations`.
+  const detail = inputText(tool.input) ?? tool.locations[0];
   return {
     ...base,
     type,

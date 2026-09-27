@@ -146,6 +146,18 @@ describe("toProviderRuntimeEvents", () => {
     ).toMatchObject([{ payload: { itemType: "file_change", detail: "a.rs" } }]);
   });
 
+  it("ToolUpdated with no input text -> the detail is the first file it touches", () => {
+    const edit = {
+      ...tool("Running"),
+      kind: "Edit" as const,
+      input: "None" as const,
+      locations: ["/w/a.txt"],
+    };
+    expect(map({ ToolUpdated: edit })).toMatchObject([
+      { type: "item.started", payload: { itemType: "file_change", detail: "/w/a.txt" } },
+    ]);
+  });
+
   it("ToolUpdated first seen already Running (claude, codex) -> item.started", () => {
     expect(map({ ToolUpdated: tool("Running") })).toMatchObject([
       { type: "item.started", payload: { status: "inProgress" } },
