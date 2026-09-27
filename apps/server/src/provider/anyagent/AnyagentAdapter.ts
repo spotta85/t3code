@@ -168,7 +168,7 @@ export const makeAnyagentAdapter = (
         const cwd = input.cwd ?? config.cwd;
         const configure = selectedOptions(kind, input.modelSelection, details());
         const mcp = t3Mcp(input.threadId, details());
-        const wire = native && wireLogPath(native.filePath, input.threadId);
+        const wire = native && wireLogPath(native.filePath, resolveThreadSegment(input.threadId));
         // T3's `t3-code` MCP server: HTTP, with the thread's bearer header.
         const server = mcp && {
           name: "t3-code",
@@ -574,10 +574,10 @@ function withDeviceShim(
   return { ...options, env };
 }
 
-/** The file anyagent records a thread's raw wire to: the log store's own file for the thread, as `.wire`. */
-function wireLogPath(nativeLog: string, threadId: ThreadId): string {
-  const segment = `${resolveThreadSegment(threadId)}.wire`;
-  return providerLogPath(NodePath.dirname(nativeLog), providerLogPrefix(nativeLog), segment);
+/** Where anyagent records a raw wire: the log store's file for `segment` (a thread, or generate), as `.wire`. */
+export function wireLogPath(nativeLog: string, segment: string): string {
+  const dir = NodePath.dirname(nativeLog);
+  return providerLogPath(dir, providerLogPrefix(nativeLog), `${segment}.wire`);
 }
 
 /** The session-level fields every mapped event carries. */

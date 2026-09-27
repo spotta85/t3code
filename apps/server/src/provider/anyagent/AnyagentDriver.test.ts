@@ -524,6 +524,26 @@ describe("AnyagentDriver over the mock binary", () => {
     );
   });
 
+  it.live("with T3's native log on, text generation records its wire beside it", () => {
+    const sent: GenerateOptions[] = [];
+    const runtime = {
+      probe: async () => details(),
+      planUsage: async () => Promise.reject(new Error("no plan usage")),
+      generate: async (_agent: string, opts: GenerateOptions) => {
+        sent.push(opts);
+        return JSON.stringify({ title: "Fix login" });
+      },
+    } as unknown as Runtime;
+    const fake = Layer.succeed(AnyagentRuntime, { use: (f) => f(runtime) });
+    const title = Effect.gen(function* () {
+      const instance = yield* create(codex, "codex", yield* Scope.make());
+      const modelSelection = { instanceId: instance.instanceId, model: "gpt-5.5" };
+      yield* instance.textGeneration.generateThreadTitle({ cwd, modelSelection, message: "x" });
+      expect(sent[0]?.record_wire).toBe("/t3-logs/events.generate.wire.log");
+    });
+    return withRuntimeLayer(fake, () => title, "/t3-logs/events.log");
+  });
+
   it.live("title and branch generation show the agent the image attachments' files", () => {
     const sent: GenerateOptions[] = [];
     const details: AgentDetails = {
@@ -605,11 +625,18 @@ function withRuntime<A, E>(script: string, body: () => Effect.Effect<A, E, Env>)
   return withRuntimeLayer(makeAnyagentRuntimeLayer({ bin: BIN, mock }), body);
 }
 
-/** Runs `body` with every service the driver needs and `runtime` as the anyagent runtime. */
+/** Runs `body` with every service the driver needs and `runtime` as the anyagent runtime; `nativeLog` turns T3's log on. */
 function withRuntimeLayer<A, E>(
   runtime: Layer.Layer<AnyagentRuntime>,
   body: () => Effect.Effect<A, E, Env>,
+  nativeLog?: string,
 ) {
+  const native = nativeLog && {
+    filePath: nativeLog,
+    write: () => Effect.void,
+    close: () => Effect.void,
+  };
+  const loggers = native ? { native, canonical: undefined } : NoOpProviderEventLoggers;
   const layer = Layer.mergeAll(
     runtime,
     ServerConfig.layerTest(cwd, { prefix: "t3-anyagent-driver-" }),
@@ -617,7 +644,7 @@ function withRuntimeLayer<A, E>(
     Layer.mock(BackgroundPolicy.BackgroundPolicy)({
       shouldRunScopeWork: () => Effect.succeed(false),
     }),
-    Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers),
+    Layer.succeed(ProviderEventLoggers, loggers),
     // Version advisories would ask npm; the enrichment logs this failure and moves on.
     Layer.succeed(
       HttpClient.HttpClient,

@@ -32,6 +32,8 @@ import {
   sanitizeThreadTitle,
   toJsonSchemaObject,
 } from "../../textGeneration/TextGenerationUtils.ts";
+import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
+import { wireLogPath } from "./AnyagentAdapter.ts";
 import { AnyagentRuntime, type Launch } from "./AnyagentRuntime.ts";
 import { selectedOptions } from "./AnyagentSnapshot.ts";
 
@@ -54,6 +56,9 @@ export const makeAnyagentTextGeneration = (
     const { use } = yield* AnyagentRuntime;
     const { attachmentsDir } = yield* ServerConfig;
     const fileSystem = yield* FileSystem.FileSystem;
+    const { native } = yield* ProviderEventLoggers;
+    // Every generation's raw wire, beside the threads' own (`events.generate.wire.log`).
+    const wire = native && wireLogPath(native.filePath, "generate");
 
     /**
      * One reply for `prompt` in `cwd`, with the images among `attachments`, decoded with `schema`; every failure is a
@@ -80,6 +85,7 @@ export const makeAnyagentTextGeneration = (
                 configure: selectedOptions(kind, modelSelection, details()),
                 attachments: imagePaths(attachmentsDir, attachments),
                 ...(schema ? { output_schema: schema } : {}),
+                ...(wire ? { record_wire: wire } : {}),
               },
               prompt,
             ),

@@ -16,6 +16,10 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { AnyagentRuntimeLive } from "../src/provider/anyagent/AnyagentRuntime.ts";
+import {
+  NoOpProviderEventLoggers,
+  ProviderEventLoggers,
+} from "../src/provider/Layers/ProviderEventLoggers.ts";
 import { makeAnyagentTextGeneration } from "../src/provider/anyagent/AnyagentTextGeneration.ts";
 import { threadTitleEvaluationCases } from "./threadTitleEvaluationCases.ts";
 import {
@@ -172,6 +176,7 @@ await Effect.runPromise(
         ),
         Layer.provideMerge(NodeServices.layer),
         Layer.provideMerge(AnyagentRuntimeLive),
+        Layer.provideMerge(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
       ),
     ),
     Effect.scoped,
