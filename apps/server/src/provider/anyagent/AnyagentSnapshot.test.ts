@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 import { ProviderDriverKind, ProviderInstanceId, ServerProvider } from "@t3tools/contracts";
-import type { AgentDetails, ConfigOption } from "anyagent-ts";
+import { type AgentDetails, AnyagentError, type ConfigOption, type PlanUsage } from "anyagent-ts";
 
 import { anyagentOptionId, selectedOptions, toServerProviderSnapshot } from "./AnyagentSnapshot.ts";
 
@@ -265,6 +265,65 @@ describe("toServerProviderSnapshot", () => {
     // A model without options of its own has none of the per-model ones (haiku has no effort).
     expect(descriptors("small")?.map((d) => d.id)).toEqual(["tier"]);
     expect(() => decode(stamp(snapshot))).not.toThrow();
+  });
+
+  it("plan usage becomes usage limits: windows by label, banked resets when reported", () => {
+    const at = (secs: number) => ({ secs_since_epoch: secs, nanos_since_epoch: 0 });
+    const usage: PlanUsage = {
+      plan: "max",
+      windows: [
+        { label: "Week (Opus)", used_percent: 7 },
+        { label: "Month", used_percent: 3 },
+        { label: "Week", used_percent: 40, resets_at: at(1_800_000_000) },
+        { label: "Session", used_percent: 120 },
+      ],
+      reset_credits: { available: 2, next_expires_at: at(1_900_000_000) },
+      fetched_at: at(1_700_000_000),
+    };
+    const limits = (u: PlanUsage | Error) =>
+      toServerProviderSnapshot(KIND, { details: claude, usage: u }, settings, AT).usageLimits;
+    expect(limits(usage)).toEqual({
+      checkedAt: "2023-11-14T22:13:20.000Z",
+      windows: [
+        { id: "five_hour", kind: "session", label: "Session", usedPercent: 100 },
+        {
+          id: "seven_day",
+          kind: "weekly",
+          label: "Week",
+          usedPercent: 40,
+          resetsAt: "2027-01-15T08:00:00.000Z",
+        },
+        { id: "monthly", kind: "monthly", label: "Month", usedPercent: 3 },
+        { id: "week_opus", kind: "other", label: "Week (Opus)", usedPercent: 7 },
+      ],
+      resetCredits: { availableCount: 2, nextExpiresAt: "2030-03-17T17:46:40.000Z" },
+    });
+    expect(limits({ ...usage, reset_credits: null })?.resetCredits).toBeUndefined();
+    const snapshot = toServerProviderSnapshot(KIND, { details: claude, usage }, settings, AT);
+    expect(() => decode(stamp(snapshot))).not.toThrow();
+  });
+
+  it("a plan-usage refusal is unsupported; any other failure is probeFailed", () => {
+    const limits = (u: Error) =>
+      toServerProviderSnapshot(KIND, { details: claude, usage: u }, settings, AT).usageLimits;
+    const refused = new AnyagentError({
+      kind: "UnsupportedFeature",
+      message: "this agent does not support plan usage",
+    });
+    expect(limits(refused)).toEqual({
+      checkedAt: AT,
+      windows: [],
+      unavailable: { reason: "unsupported", message: "this agent does not support plan usage" },
+    });
+    const died = new AnyagentError({
+      kind: "ProcessExited",
+      message: "claude exited",
+      status: "1",
+    });
+    expect(limits(died)?.unavailable).toEqual({ reason: "probeFailed", message: "claude exited" });
+    expect(limits(new Error("anyagent serve failed to start"))?.unavailable?.reason).toBe(
+      "probeFailed",
+    );
   });
 
   it("custom models follow the agent's, with the agent's options", () => {

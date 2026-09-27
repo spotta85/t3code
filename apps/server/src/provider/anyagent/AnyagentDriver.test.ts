@@ -203,7 +203,10 @@ describe("AnyagentDriver over the mock binary", () => {
       config_options: [],
       commands: [],
     };
-    const runtime = { probe: async () => details } as unknown as Runtime;
+    const runtime = {
+      probe: async () => details,
+      planUsage: async () => Promise.reject(new Error("no plan usage")),
+    } as unknown as Runtime;
     const flaky = Layer.succeed(AnyagentRuntime, {
       use: (f) => (probes++ === 0 ? Promise.reject(new Error("boot probe failed")) : f(runtime)),
     });
@@ -255,9 +258,9 @@ describe("AnyagentDriver over the mock binary", () => {
     );
   });
 
-  it.live("an instance's launch options reach probe, open and generate", () => {
+  it.live("an instance's launch options reach probe, plan usage, open and generate", () => {
     const calls: Array<{ method: string; agent: unknown; options: unknown }> = [];
-    const recorded = new Set(["probe", "open", "generate"]);
+    const recorded = new Set(["probe", "planUsage", "open", "generate"]);
     const recording = Layer.effect(
       AnyagentRuntime,
       Effect.map(AnyagentRuntime, ({ use }) => ({
@@ -300,11 +303,16 @@ describe("AnyagentDriver over the mock binary", () => {
         });
 
         const launch = { env: { FOO: "1" }, args: ["--verbose"], config_home: "/homes/work" };
-        expect(calls.map((c) => c.method).toSorted()).toEqual(["generate", "open", "probe"]);
+        expect(calls.map((c) => c.method).toSorted()).toEqual(
+          ["generate", "open", "planUsage", "probe"].toSorted(),
+        );
         for (const call of calls) {
           expect(call.agent).toEqual({ id: "mock", path: "/opt/claude-cli" });
           expect(call.options).toMatchObject(launch);
         }
+        // The mock has no plan usage: anyagent says so, and the snapshot shows it as unsupported.
+        const snapshot = yield* instance.snapshot.getSnapshot;
+        expect(snapshot.usageLimits?.unavailable?.reason).toBe("unsupported");
       }),
     );
   });

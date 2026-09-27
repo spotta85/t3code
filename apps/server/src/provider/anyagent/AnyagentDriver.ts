@@ -230,14 +230,16 @@ export function launchOf(
 const ANYAGENT_BIN_HINT =
   " (anyagent binary not found: set ANYAGENT_BIN to it, see docs/anyagent-port.md)";
 
-/** Probes the agent; a failure is a result: a missing agent carries an install hint, anything else its error. */
+/** Probes the agent, then reads its plan usage. A failure is a result; a missing agent carries an install hint. */
 async function probeAgent(
   use: AnyagentRuntime["Service"]["use"],
   agent: string,
   { agent: ref, options }: Launch,
 ): Promise<AgentProbe> {
   try {
-    return { details: await use((runtime) => runtime.probe(ref, options)) };
+    const details = await use((runtime) => runtime.probe(ref, options));
+    const usage = await use((runtime) => runtime.planUsage(ref, options)).catch(asError);
+    return { details, usage };
   } catch (cause) {
     // A plain Error here is `anyagent serve` failing to start (missing binary, spawn error).
     const error =
@@ -255,6 +257,11 @@ async function probeAgent(
     const missing = report?.missing.find((m) => m.id === agent);
     return { error, installHint: missing?.install_hint ?? `${agent} is not installed.` };
   }
+}
+
+/** A rejection as an Error, so a failed plan-usage read is a value the snapshot shows. */
+function asError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause));
 }
 
 /** The kind's settings with every default applied. */

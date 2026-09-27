@@ -344,7 +344,7 @@ describe("toProviderRuntimeEvents", () => {
     ]);
   });
 
-  it("PlanUsageUpdated -> account.rate-limits.updated", () => {
+  it("PlanUsageUpdated -> account.rate-limits.updated, window ids as the snapshot's", () => {
     const usage = {
       windows: [
         {
@@ -362,8 +362,14 @@ describe("toProviderRuntimeEvents", () => {
         payload: {
           limits: {
             windows: [
-              { id: "Session", kind: "session", label: "Session", usedPercent: 12.5, resetsAt: AT },
-              { id: "Week", kind: "weekly", label: "Week", usedPercent: 40 },
+              {
+                id: "five_hour",
+                kind: "session",
+                label: "Session",
+                usedPercent: 12.5,
+                resetsAt: AT,
+              },
+              { id: "seven_day", kind: "weekly", label: "Week", usedPercent: 40 },
             ],
           },
         },

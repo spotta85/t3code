@@ -12,9 +12,17 @@ import type {
   ServerProviderAuth,
   ServerProviderModel,
   ServerProviderSlashCommand,
+  ServerProviderUsageLimits,
 } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
-import type { AgentDetails, AuthStatus, ConfigOption, ConfigValue } from "anyagent-ts";
+import {
+  type AgentDetails,
+  AnyagentError,
+  type AuthStatus,
+  type ConfigOption,
+  type ConfigValue,
+  type PlanUsage,
+} from "anyagent-ts";
 
 import {
   buildBooleanOptionDescriptor,
@@ -24,10 +32,12 @@ import {
   providerModelsFromSettings,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
+import { makeUnavailableUsageLimits } from "../providerUsageLimits.ts";
+import { planUsageLimits } from "./AnyagentEvents.ts";
 
-/** What the driver learned about the agent: its details, or why the probe failed. */
+/** What the driver learned about the agent: its details and plan usage (or why that read failed), or why the probe failed. */
 export type AgentProbe =
-  | { readonly details: AgentDetails }
+  | { readonly details: AgentDetails; readonly usage?: PlanUsage | Error }
   | { readonly error: string; readonly installHint?: string };
 
 /** The instance settings the snapshot reflects. */
@@ -38,8 +48,8 @@ export interface SnapshotSettings {
 }
 
 /**
- * The provider snapshot for one probe (`undefined`: disabled, not probed). Models come from the
- * agent's `model` option; every other option T3 does not own becomes a model option descriptor.
+ * The provider snapshot for one probe (`undefined`: disabled, not probed). Models come from the agent's `model`
+ * option; every other option T3 does not own becomes a model option descriptor; plan usage becomes the usage limits.
  */
 export function toServerProviderSnapshot(
   kind: ProviderDriverKind,
@@ -67,7 +77,7 @@ export function toServerProviderSnapshot(
       capabilities,
     ),
     slashCommands: (details?.commands ?? []).map(slashCommand),
-    probe: probeResult(settings, probe),
+    probe: probeResult(settings, probe, checkedAt),
   });
 }
 
@@ -128,10 +138,11 @@ export function offersPlan(options: ReadonlyArray<ConfigOption>): boolean {
 /** Options T3 controls itself: the model picker, runtime mode (permissions), and plan mode. */
 const T3_OWNED = new Set(["model", "mode", "sandbox"]);
 
-/** Installed / version / status / auth / message for the snapshot. */
+/** Installed / version / status / auth / message / usage limits for the snapshot. */
 function probeResult(
   settings: SnapshotSettings,
   probe: AgentProbe | undefined,
+  checkedAt: string,
 ): ProviderProbeResult {
   const name = settings.displayName;
   if (!settings.enabled || !probe) {
@@ -160,7 +171,16 @@ function probeResult(
     status: login === undefined ? "ready" : "error",
     auth: toAuth(auth),
     ...(login !== undefined ? { message: `${name} is not logged in. ${login}` } : {}),
+    ...(probe.usage ? { usageLimits: usageLimits(probe.usage, checkedAt) } : {}),
   };
+}
+
+/** Plan usage as T3's usage limits; a refusal (`UnsupportedFeature`) is `unsupported`, any other failure `probeFailed`. */
+function usageLimits(usage: PlanUsage | Error, checkedAt: string): ServerProviderUsageLimits {
+  if (!(usage instanceof Error)) return planUsageLimits(usage);
+  const unsupported = usage instanceof AnyagentError && usage.kind === "UnsupportedFeature";
+  const reason = unsupported ? "unsupported" : "probeFailed";
+  return makeUnavailableUsageLimits({ checkedAt, reason, message: usage.message.trim() });
 }
 
 /** anyagent's login state as T3's: kind as a snake_case type, the plan as label. */

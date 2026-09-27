@@ -15,6 +15,7 @@ import {
   type ProviderDriverKind,
   type ProviderRuntimeEvent,
   type ProviderUserInputAnswers,
+  type ServerProviderUsageLimits,
   type ServerProviderUsageWindow,
   type ThreadId,
   type TurnId,
@@ -35,6 +36,8 @@ import {
   type ToolUpdate,
   type TurnUsage,
 } from "anyagent-ts";
+
+import { clampPercent, makeUsageLimits } from "../providerUsageLimits.ts";
 
 /** What the mapping needs besides the event; the adapter keeps it per session. */
 export interface EventContext {
@@ -278,6 +281,26 @@ export function permissionChoice(
   return found ?? (wanted === "decline" ? "DenyOnce" : "AllowOnce");
 }
 
+/** A full plan-usage report as T3's usage limits: its windows, banked resets when reported, and when it was read. */
+export function planUsageLimits(plan: PlanUsage): ServerProviderUsageLimits {
+  const credits = plan.reset_credits;
+  const expires = credits?.next_expires_at;
+  return {
+    ...makeUsageLimits({
+      checkedAt: isoTime(plan.fetched_at),
+      windows: plan.windows.map(usageWindow),
+    }),
+    ...(credits
+      ? {
+          resetCredits: {
+            availableCount: credits.available,
+            ...(expires ? { nextExpiresAt: isoTime(expires) } : {}),
+          },
+        }
+      : {}),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // HELPERS
 // ---------------------------------------------------------------------------
@@ -488,14 +511,25 @@ function tokenUsage(usage: TurnUsage | null | undefined) {
   };
 }
 
-/** One plan-quota window in T3's usage-limit shape. */
+/** T3's window id and kind for anyagent's well-known window labels. */
+const WINDOWS: Record<string, readonly [string, ServerProviderUsageWindow["kind"]]> = {
+  Session: ["five_hour", "session"],
+  Week: ["seven_day", "weekly"],
+  Month: ["monthly", "monthly"],
+};
+
+/** One plan-quota window in T3's usage-limit shape; another label ("Week (Opus)") gets an id made from it. */
 function usageWindow(w: PlanUsage["windows"][number]): ServerProviderUsageWindow {
-  const kind = w.label === "Session" ? "session" : w.label === "Week" ? "weekly" : "other";
+  const slug = w.label
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  const [id, kind] = WINDOWS[w.label] ?? [slug, "other"];
   return {
-    id: w.label,
+    id,
     kind,
     label: w.label,
-    usedPercent: Math.min(100, Math.max(0, w.used_percent)),
+    usedPercent: clampPercent(w.used_percent),
     ...(w.resets_at ? { resetsAt: isoTime(w.resets_at) } : {}),
   };
 }
