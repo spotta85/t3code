@@ -668,7 +668,8 @@ async function mcpTool(ctx: Ctx): Promise<string> {
     throw new Skip("T3's MCP server was never declared to the agent (no HTTP MCP transport)");
   expect(turn.status === "ready", `turn ended ${turn.status}: ${turn.lastError}`);
   expect(calls.length > 0, `no completed call of the tool; reply ${quote(turn.text)}`);
-  const call = calls[0]!.payload;
+  // The call itself, not a tool search that names it (claude looks MCP tools up first).
+  const call = (calls.find((e) => e.payload.itemType === "mcp_tool_call") ?? calls[0]!).payload;
   expect(call.status === "completed", `the tool call ended ${call.status}`);
   const answered = JSON.stringify(call.data ?? {}).includes("pullRequests");
   return `list_thread_pull_requests ${call.status} (${call.itemType})${answered ? ", T3's answer (pullRequests) in the item" : ""}; reply ${quote(turn.text)}`;
