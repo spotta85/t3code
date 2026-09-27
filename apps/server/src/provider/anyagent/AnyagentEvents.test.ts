@@ -265,6 +265,13 @@ describe("toProviderRuntimeEvents", () => {
     decode(nested[0]);
   });
 
+  it("TurnDiff -> turn.diff.updated with the turn's whole diff", () => {
+    const unified = "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n";
+    expect(map({ TurnDiff: { unified } })).toEqual([
+      { ...base, eventId: "k:7:0", type: "turn.diff.updated", payload: { unifiedDiff: unified } },
+    ]);
+  });
+
   it("PlanUpdated -> turn.plan.updated", () => {
     const entries = [
       { text: "read", status: "Completed" as const },

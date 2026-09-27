@@ -90,6 +90,7 @@ const CHOICES: Record<PermissionChoice, ProviderApprovalOption> = {
  * | ToolUpdated Denied       | also tool.denied, the reason from its output              |
  * | ToolOutputDelta          | content.delta (command_output)                            |
  * | ToolProgress             | tool.progress; in a subagent, taskId is its tool          |
+ * | TurnDiff                 | turn.diff.updated (the turn's whole diff so far)          |
  * | PlanUpdated              | turn.plan.updated                                         |
  * | PlanProposed             | turn.proposed.completed                                   |
  * | RequestOpened Permission | request.opened, options = offered choices as T3 decisions |
@@ -106,8 +107,7 @@ const CHOICES: Record<PermissionChoice, ProviderApprovalOption> = {
  * |                          | from its usage (claude, codex, opencode, pi, native agy;  |
  * |                          | not ACP agents, antigravity's ACP server included)        |
  * | session error / end      | runtime.error + session.exited (sessionExitedEvents)      |
- * | (no source in anyagent)  | task.progress, turn.diff.updated, model.rerouted:         |
- * |                          | gaps.md rows                                              |
+ * | (no source in anyagent)  | task.progress, model.rerouted: gaps.md rows               |
  */
 export function toProviderRuntimeEvents(
   ctx: EventContext,
@@ -137,6 +137,9 @@ export function toProviderRuntimeEvents(
     return [delta(base, k.ToolOutputDelta.tool_id, "command_output", k.ToolOutputDelta.text)];
   }
   if ("ToolProgress" in k) return [toolProgress(base, k.ToolProgress, nested)];
+  if ("TurnDiff" in k) {
+    return [{ ...base, type: "turn.diff.updated", payload: { unifiedDiff: k.TurnDiff.unified } }];
+  }
   if ("MessageEnded" in k) {
     const id = k.MessageEnded.message_id;
     const itemType = ctx.textMessages.has(id) ? "assistant_message" : "reasoning";
