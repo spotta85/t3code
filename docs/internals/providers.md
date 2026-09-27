@@ -11,24 +11,9 @@ session or catalog state.
 
 ## Process and account isolation
 
-T3-managed OpenCode chat uses one server per thread. Its MCP registrations are directory-scoped, while
-T3's MCP connection is thread-scoped. Sharing a chat server between threads in one directory would
-let them replace each other's connection. Catalog and text-generation work can share the
-[instance-owned helper](../../apps/server/src/provider/OpenCodeServerOwner.ts), which closes
-after an idle period. External OpenCode servers remain externally owned and can require an
-external restart to pick up configuration changes.
-
-OpenCode also stores persistent approval grants per directory. Automatic full-access replies use
-`once` so they cannot widen a supervised thread's permissions on a shared external server.
-See the [adapter](../../apps/server/src/provider/Layers/OpenCodeAdapter.ts).
-
-Antigravity separates account profiles per instance while sharing installed executables across the
-environment. It forces file-based credential storage because the native macOS keychain entry would
-otherwise be shared across instances. The launch environment removes ambient Google credentials,
-so an instance cannot silently use another account or billing project. The agent also resolves
-its user-global skill directories under that profile, so the profile links those two directories
-back to the user's real `~/.gemini`; MCP servers, hooks, and rules there stay out of the profile.
-See [profile isolation](../../apps/server/src/provider/antigravityAuthSupport.ts).
+Every built-in driver runs its agent through anyagent (one shared `anyagent serve` per server).
+Agent processes, per-agent profiles, sign-in and wire protocols live there, not in T3. See the
+[port notes](../anyagent-port.md) for what moved and what T3 no longer does.
 
 The [Antigravity installer](../../apps/server/src/provider/AntigravityInstallation.ts) outlives
 client connections and provider-instance rebuilds. Releases are immutable, with an atomic pointer
@@ -37,25 +22,9 @@ and removal must respect those leases instead of replacing executables under a r
 
 ## Setup must not happen as a health-check side effect
 
-Opening a provider session can start MCP servers, run hooks, or launch a login browser.
-[Grok probes](../../apps/server/src/provider/Layers/GrokProvider.ts) avoid authentication and
-session creation for this reason. Antigravity likewise reserves authenticated catalog sessions for
-explicit setup or model refresh; background checks use initialization only.
-
-[Antigravity sign-in](../../apps/server/src/provider/AntigravityAuth.ts) belongs to the initiating
-T3 auth session. The client carries the return URL back to the environment because the provider's
-loopback listener may be on another machine. Forward only the callback for the owned pending flow;
-a successful callback HTTP request is not proof that provider authentication finished. The native
-process owns token exchange and storage.
-
-Antigravity sign-out closes admission to new processes and stops existing processes before clearing account
-metadata. Otherwise a helper or resumed session could retain the old account. Cached model lists
-do not establish current access, and an authoritative empty catalog must clear the old list.
-
-Antigravity text-generation helpers deny tool requests, but native hooks and MCP configuration can
-run before the prompt. They reject profiles with such configuration before launch. Prompt
-instructions and tool denial do not create a native sandbox.
-See [helper constraints](../../apps/server/src/textGeneration/AntigravityTextGeneration.ts).
+Opening a provider session can start MCP servers, run hooks, or launch a login browser. Background
+status checks therefore use anyagent's `probe`, which reports install, version, auth and models
+without opening a session.
 
 ## Provider updates run only through the owning installer
 
@@ -71,7 +40,8 @@ manual-only but still reports the version gap. npm updates pin
 provider. Homebrew
 compares against `brew info` since casks trail npm by hours; native installs share npm's version
 train, so the registry stays authoritative for them.
-See the [resolver](../../apps/server/src/provider/providerMaintenance.ts).
+See the [resolver](../../apps/server/src/provider/providerMaintenance.ts) and each agent's
+[update rule](../../apps/server/src/provider/anyagent/maintenance.ts).
 
 Ownership is cached per instance and re-read immediately before an update runs. The
 [runner](../../apps/server/src/provider/providerMaintenanceRunner.ts) refuses when the lock key
@@ -82,7 +52,6 @@ with a readable, current version.
 
 Codex async questions arrive as notifications and are answered with a new user message. There is
 no pending RPC response to send. Blocking questions still use the request/response path. The
-[adapter](../../apps/server/src/provider/Layers/CodexAdapter.ts) distinguishes them; the
 [decider](../../apps/server/src/orchestration/decider.ts) records an async answer and its user
 message together.
 

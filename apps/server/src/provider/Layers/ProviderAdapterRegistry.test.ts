@@ -16,10 +16,8 @@ import * as Stream from "effect/Stream";
 
 import * as ProviderAuthFlow from "../ProviderAuthFlow.ts";
 
-import type * as ClaudeAdapter from "../Services/ClaudeAdapter.ts";
-import type * as CodexAdapter from "../Services/CodexAdapter.ts";
-import type * as CursorAdapter from "../Services/CursorAdapter.ts";
-import type * as OpenCodeAdapter from "../Services/OpenCodeAdapter.ts";
+import type { ProviderAdapterError } from "../Errors.ts";
+import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderInstanceRegistry from "../Services/ProviderInstanceRegistry.ts";
 import type { ProviderInstance } from "../ProviderDriver.ts";
@@ -28,12 +26,14 @@ import type * as TextGeneration from "../../textGeneration/TextGeneration.ts";
 import * as ProviderAdapterRegistryLayer from "./ProviderAdapterRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
+type FakeAdapter = ProviderAdapterShape<ProviderAdapterError>;
+
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const CLAUDE_AGENT_DRIVER = ProviderDriverKind.make("claudeAgent");
 const OPENCODE_DRIVER = ProviderDriverKind.make("opencode");
 const CURSOR_DRIVER = ProviderDriverKind.make("cursor");
 
-const fakeCodexAdapter: CodexAdapter.CodexAdapterShape = {
+const fakeCodexAdapter: FakeAdapter = {
   provider: CODEX_DRIVER,
   capabilities: { sessionModelSwitch: "in-session" },
   startSession: vi.fn(),
@@ -51,7 +51,7 @@ const fakeCodexAdapter: CodexAdapter.CodexAdapterShape = {
   streamEvents: Stream.empty,
 };
 
-const fakeClaudeAdapter: ClaudeAdapter.ClaudeAdapterShape = {
+const fakeClaudeAdapter: FakeAdapter = {
   provider: CLAUDE_AGENT_DRIVER,
   capabilities: { sessionModelSwitch: "in-session" },
   startSession: vi.fn(),
@@ -68,7 +68,7 @@ const fakeClaudeAdapter: ClaudeAdapter.ClaudeAdapterShape = {
   streamEvents: Stream.empty,
 };
 
-const fakeOpenCodeAdapter: OpenCodeAdapter.OpenCodeAdapterShape = {
+const fakeOpenCodeAdapter: FakeAdapter = {
   provider: OPENCODE_DRIVER,
   capabilities: { sessionModelSwitch: "in-session" },
   startSession: vi.fn(),
@@ -85,7 +85,7 @@ const fakeOpenCodeAdapter: OpenCodeAdapter.OpenCodeAdapterShape = {
   streamEvents: Stream.empty,
 };
 
-const fakeCursorAdapter: CursorAdapter.CursorAdapterShape = {
+const fakeCursorAdapter: FakeAdapter = {
   provider: CURSOR_DRIVER,
   capabilities: { sessionModelSwitch: "in-session" },
   startSession: vi.fn(),

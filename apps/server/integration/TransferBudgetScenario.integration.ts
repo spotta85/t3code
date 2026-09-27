@@ -62,10 +62,6 @@ export const seedTransferBudgetHistory = Effect.fn("TransferBudget.seedHistory")
   harness: OrchestrationIntegrationHarness,
   provider: ProviderDriverKind,
 ) {
-  if (!harness.adapterHarness) {
-    return yield* Effect.die(new Error("Transfer budget history requires the replay adapter."));
-  }
-
   const modelSelection = transferModelSelection(provider);
   yield* harness.engine.dispatch({
     type: "project.create",
@@ -121,9 +117,6 @@ export const queueMeasuredTransferTurn = Effect.fn("TransferBudget.queueMeasured
   harness: OrchestrationIntegrationHarness,
   provider: ProviderDriverKind,
 ) {
-  if (!harness.adapterHarness) {
-    return yield* Effect.die(new Error("Transfer budget measurement requires the replay adapter."));
-  }
   const response = makeRecordedTransferTurn(provider, TRANSFER_MEASURED_TURN_INDEX);
   yield* harness.adapterHarness.queueTurnResponse(TRANSFER_THREAD_ID, response);
 });

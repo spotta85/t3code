@@ -27,11 +27,13 @@ import {
 } from "@t3tools/contracts";
 
 import { makeAnyagentDriver, type AnyagentDriverEnv } from "./anyagent/AnyagentDriver.ts";
-import { UPDATE as CLAUDE_UPDATE } from "./Drivers/ClaudeDriver.ts";
-import { makeCodexMaintenanceResolver } from "./Drivers/CodexDriver.ts";
-import { UPDATE as CURSOR_UPDATE } from "./Drivers/CursorDriver.ts";
-import { UPDATE as GROK_UPDATE } from "./Drivers/GrokDriver.ts";
-import { UPDATE as OPENCODE_UPDATE } from "./Drivers/OpenCodeDriver.ts";
+import {
+  CLAUDE_UPDATE,
+  CURSOR_UPDATE,
+  GROK_UPDATE,
+  makeCodexMaintenanceResolver,
+  OPENCODE_UPDATE,
+} from "./anyagent/maintenance.ts";
 import type { AnyProviderDriver } from "./ProviderDriver.ts";
 
 /**

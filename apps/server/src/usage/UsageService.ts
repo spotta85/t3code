@@ -36,6 +36,7 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Encoding from "effect/Encoding";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -48,7 +49,6 @@ import { ServerConfig } from "../config.ts";
 import { expandHomePath } from "../pathExpansion.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
-import { resolveAntigravityInstanceDirectories } from "../provider/antigravityAuthSupport.ts";
 import { mergeProviderInstanceEnvironment } from "../provider/ProviderInstanceEnvironment.ts";
 import { readOpenCodeUsage } from "./opencodeUsageReader.ts";
 import { readAntigravityUsage } from "./antigravityUsageReader.ts";
@@ -534,7 +534,7 @@ export const make = Effect.gen(function* () {
     ]);
     for (const [instanceId, instance] of Object.entries(settings.providerInstances)) {
       if (instance.driver === "antigravity") {
-        const directories = yield* resolveAntigravityInstanceDirectories(
+        const profile = yield* antigravityProfileDirectory(
           config.stateDir,
           ProviderInstanceId.make(instanceId),
         ).pipe(
@@ -549,7 +549,7 @@ export const make = Effect.gen(function* () {
               }),
           ),
         );
-        antigravityRoots.push(path.join(directories.profile, "antigravity-acp"));
+        antigravityRoots.push(path.join(profile, "antigravity-acp"));
       }
     }
     const antigravityDirs = new Set<string>();
@@ -887,3 +887,20 @@ export const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(UsageService, make);
+
+/**
+ * The private profile (GEMINI_HOME) T3's own Antigravity driver kept per instance; its
+ * history still counts toward usage. The instance ID is hashed so case-only differences
+ * stay separate on case-insensitive filesystems.
+ */
+export const antigravityProfileDirectory = Effect.fn("antigravityProfileDirectory")(function* (
+  stateDir: string,
+  instanceId: ProviderInstanceId,
+) {
+  const crypto = yield* Crypto.Crypto;
+  const path = yield* Path.Path;
+  const key = Encoding.encodeHex(
+    yield* crypto.digest("SHA-256", new TextEncoder().encode(instanceId)),
+  );
+  return path.join(stateDir, "providers", "antigravity", key);
+});

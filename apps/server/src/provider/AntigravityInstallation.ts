@@ -24,18 +24,12 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
-import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import type * as NodeStream from "node:stream";
 import * as Yauzl from "yauzl";
 
 import { ServerConfig } from "../config.ts";
-import { makeAntigravityAcpRuntime } from "./acp/AntigravityAcpSupport.ts";
-import {
-  buildAntigravityAcpSpawnInput,
-  prepareAntigravityProfile,
-} from "./antigravityAuthSupport.ts";
 import {
   resolveAntigravityReleaseAsset,
   type AntigravityReleaseAsset,
@@ -270,7 +264,6 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
   const http = yield* HttpClient.HttpClient;
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const serviceScope = yield* Effect.scope;
   const platform = yield* HostProcessPlatform;
   const arch = yield* HostProcessArchitecture;
@@ -465,59 +458,9 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
         ),
     );
 
-  const validate =
-    options.validate ??
-    Effect.fn("AntigravityInstallation.validate")(
-      function* (executable: AntigravityExecutable, expectedVersion: string) {
-        const profileDirectory = yield* fs.makeTempDirectoryScoped({
-          prefix: "t3-antigravity-validate-",
-        });
-        const profile = yield* prepareAntigravityProfile({
-          profileDirectory,
-          platform,
-          baseEnv: environment,
-          // The profile is scoped, so it cleans up the unpack; a shallow
-          // root keeps it under Windows' path limit.
-          tempDirectory: profileDirectory,
-        });
-        const runtime = yield* makeAntigravityAcpRuntime({
-          spawn: buildAntigravityAcpSpawnInput({
-            installation: executable,
-            profile,
-            cwd: profileDirectory,
-            baseEnv: environment,
-          }),
-          cwd: profileDirectory,
-          childProcessSpawner: spawner,
-          clientInfo: { name: "t3-code", version: "0.0.0" },
-        });
-        const initialized = yield* runtime.initialize();
-        if (
-          initialized.agentInfo?.name !== "antigravity-acp" ||
-          initialized.agentInfo.version !== expectedVersion ||
-          initialized.protocolVersion !== 1 ||
-          initialized.agentCapabilities?.loadSession !== true ||
-          !initialized.agentCapabilities.sessionCapabilities?.resume ||
-          !initialized.agentCapabilities.auth?.logout ||
-          !initialized.authMethods?.some((method) => method.id === "oauth-personal")
-        ) {
-          return yield* installationError(
-            "verify",
-            "The downloaded runtime did not identify as the expected Google Antigravity release.",
-          );
-        }
-      },
-      Effect.provideService(FileSystem.FileSystem, fs),
-      Effect.provideService(Path.Path, path),
-      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-      Effect.provideService(Crypto.Crypto, crypto),
-      Effect.mapError(
-        wrapFailure(
-          "verify",
-          "The downloaded Antigravity runtime could not start in this environment.",
-        ),
-      ),
-    );
+  // Download size and sha256 are checked on install. Launching the runtime to
+  // check its identity went with T3's ACP client; tests inject a validator.
+  const validate = options.validate ?? (() => Effect.void);
 
   const install = Effect.fn("AntigravityInstallation.install")(
     function* (asset: AntigravityReleaseAsset) {

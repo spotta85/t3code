@@ -953,3 +953,24 @@ describe("UsageService", () => {
     }).pipe(Effect.scoped),
   );
 });
+
+describe("antigravityProfileDirectory", () => {
+  it.effect("keeps accounts separate even when instance IDs differ only by case", () =>
+    Effect.gen(function* () {
+      const first = yield* UsageService.antigravityProfileDirectory(
+        "/userdata",
+        ProviderInstanceId.make("antigravity"),
+      );
+      const second = yield* UsageService.antigravityProfileDirectory(
+        "/userdata",
+        ProviderInstanceId.make("Antigravity"),
+      );
+      // Existing profiles live at this path; it must not move.
+      assert.strictEqual(
+        first,
+        "/userdata/providers/antigravity/ac0a3dfd6dddb20962cecff6ee5fe65e19d3923be20e52c5ab52ff877f7e4c32",
+      );
+      assert.notStrictEqual(first.toLowerCase(), second.toLowerCase());
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+});

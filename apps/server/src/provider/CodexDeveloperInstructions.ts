@@ -1,5 +1,4 @@
 import type { ProviderInteractionMode } from "@t3tools/contracts";
-import type { V2TurnStartParams__AdditionalContextEntry } from "effect-codex-app-server/schema";
 import { buildRuntimeInstructions } from "./RuntimeInstructions.ts";
 
 const T3_CODE_BROWSER_TOOL_INSTRUCTIONS = `## T3 Code collaborative browser
@@ -184,6 +183,12 @@ Use the \`request_user_input\` tool only when it is listed in the available tool
 In Default mode, strongly prefer making reasonable assumptions and executing the user's request rather than stopping to ask questions. If you absolutely must ask a question because the answer cannot be discovered from local context and a reasonable assumption would be risky, ask the user directly with a concise plain-text question. Never write a multiple choice question as a textual assistant message.
 </collaboration_mode>`;
 
+/** One `turn/start.additionalContext` entry of codex's app-server wire. */
+interface AdditionalContextEntry {
+  readonly kind: "application";
+  readonly value: string;
+}
+
 export interface CodexRuntimeInfo {
   readonly model: string;
   readonly modelName?: string | undefined;
@@ -214,7 +219,7 @@ export function buildCodexAdditionalContext(
    * setting, so the prompt cannot claim tools the turn doesn't have.
    */
   toolsAvailable: boolean | T3CodeToolAvailability = true,
-): Record<string, V2TurnStartParams__AdditionalContextEntry> {
+): Record<string, AdditionalContextEntry> {
   const tools = toolInstructions(toolsAvailable);
   // Separate keys keep each value under Codex's per-entry token cap.
   return {

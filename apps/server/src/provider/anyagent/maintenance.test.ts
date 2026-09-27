@@ -3,7 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { expect, it } from "@effect/vitest";
-import { ProviderInstanceId } from "@t3tools/contracts";
+import { ProviderDriverKind } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -14,101 +14,81 @@ import { HttpClient } from "effect/unstable/http";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
-import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
-import { ServerConfig } from "../../config.ts";
-import { ServerSettingsService } from "../../serverSettings.ts";
-import * as ResetCreditCoordinator from "../Layers/resetCreditCoordinator.ts";
-import { NoOpProviderEventLoggers, ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
-import * as ModelManifest from "../ModelManifest.ts";
 import {
   createProviderVersionAdvisory,
+  type ProviderMaintenanceCapabilitiesResolver,
   ProviderVersionCache,
   resolveLatestProviderVersion,
+  resolveProviderMaintenanceCapabilitiesEffect,
 } from "../providerMaintenance.ts";
-import { CodexDriver } from "./CodexDriver.ts";
+import { CURSOR_UPDATE, GROK_UPDATE, makeCodexMaintenanceResolver } from "./maintenance.ts";
 
-const testLayer = ServerConfig.layerTest(process.cwd(), {
-  prefix: "t3-codex-driver-maintenance-",
-}).pipe(
-  Layer.provideMerge(NodeServices.layer),
-  Layer.provideMerge(ServerSettingsService.layerTest()),
-  Layer.provideMerge(ModelManifest.layerTest),
-  Layer.provideMerge(ResetCreditCoordinator.layerTest),
-  Layer.provideMerge(
-    Layer.mock(BackgroundPolicy.BackgroundPolicy)({
-      shouldRunScopeWork: () => Effect.succeed(false),
-    }),
-  ),
-  Layer.provideMerge(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
-  Layer.provideMerge(
-    Layer.succeed(
-      HttpClient.HttpClient,
-      HttpClient.make(() => Effect.die("Disabled Codex must not make an HTTP request")),
-    ),
-  ),
-);
-
-// The `#!/bin/sh` stub below cannot be resolved as an executable on Windows.
+// The `#!/bin/sh` stubs below cannot be resolved as executables on Windows.
 const windowsHost = HostProcessPlatform.defaultValue() === "win32";
 
-const noSpawn = ChildProcessSpawner.make(() =>
-  Effect.die("Disabled Codex must not spawn a process"),
+// Resolving never downloads: the latest version comes from a seeded cache.
+const testLayer = Layer.merge(
+  NodeServices.layer,
+  Layer.succeed(
+    HttpClient.HttpClient,
+    HttpClient.make(() => Effect.die("Resolving an update must not make an HTTP request")),
+  ),
 );
 
-it.layer(testLayer)("CodexDriver", (it) => {
+const noSpawn = ChildProcessSpawner.make(() =>
+  Effect.die("Resolving an update must not spawn a process"),
+);
+
+/** Resolves `resolver` for `binaryPath` the way a driver does; by default nothing may be spawned. */
+const resolve = (
+  resolver: ProviderMaintenanceCapabilitiesResolver,
+  binaryPath: string,
+  env: NodeJS.ProcessEnv = process.env,
+  spawner = noSpawn,
+) =>
+  resolveProviderMaintenanceCapabilitiesEffect(resolver, { binaryPath, env }).pipe(
+    Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+  );
+
+/** The codex resolver for a shared home inside `tempDir`. */
+const codexIn = (tempDir: string) =>
+  makeCodexMaintenanceResolver(NodePath.join(tempDir, "codex-home"));
+
+/** Writes an executable `#!/bin/sh` stub at `filePath`. */
+const writeStub = (filePath: string, content = "#!/bin/sh\n") =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.makeDirectory(NodePath.dirname(filePath), { recursive: true });
+    yield* fs.writeFileString(filePath, content);
+    yield* fs.chmod(filePath, 0o755);
+  });
+
+it.layer(testLayer)("codex update", (it) => {
   it.effect.skipIf(windowsHost)(
     "runs the standalone updater against the shared home, not the shadow home",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
-        const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-driver-" });
+        const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-update-" });
         const sharedHome = NodePath.join(tempDir, "codex-home");
-        const shadowHome = NodePath.join(tempDir, "codex-shadow");
         const binaryPath = NodePath.join(sharedHome, "packages", "standalone", "bin", "codex");
-        yield* fs.makeDirectory(NodePath.dirname(binaryPath), { recursive: true });
-        yield* fs.writeFileString(binaryPath, "#!/bin/sh\n");
-        yield* fs.chmod(binaryPath, 0o755);
+        yield* writeStub(binaryPath);
 
-        const instance = yield* CodexDriver.create({
-          instanceId: ProviderInstanceId.make("codex-shadow"),
-          displayName: "Codex test",
-          enabled: false,
-          environment: [],
-          config: {
-            ...CodexDriver.defaultConfig(),
-            binaryPath,
-            homePath: sharedHome,
-            shadowHomePath: shadowHome,
-          },
-        });
-
-        const capabilities = yield* instance.snapshot.resolveMaintenance();
+        const capabilities = yield* resolve(makeCodexMaintenanceResolver(sharedHome), binaryPath);
         expect(capabilities.update).toMatchObject({
           executable: binaryPath,
           args: ["update"],
           lockKey: "codex-native",
           env: { CODEX_HOME: sharedHome },
         });
-      }).pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn),
-        Effect.scoped,
-      ),
+      }).pipe(Effect.scoped),
   );
 
   it.effect("stays manual-only when the configured executable does not exist", () =>
     Effect.gen(function* () {
-      const instance = yield* CodexDriver.create({
-        instanceId: ProviderInstanceId.make("codex-missing"),
-        displayName: "Codex test",
-        enabled: false,
-        environment: [],
-        config: {
-          ...CodexDriver.defaultConfig(),
-          binaryPath: NodePath.join(NodeOS.tmpdir(), "t3-codex-missing", "codex"),
-        },
-      });
-      expect((yield* instance.snapshot.resolveMaintenance()).update).toBeNull();
-    }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn), Effect.scoped),
+      const binaryPath = NodePath.join(NodeOS.tmpdir(), "t3-codex-missing", "codex");
+      expect((yield* resolve(codexIn(NodeOS.tmpdir()), binaryPath)).update).toBeNull();
+    }),
   );
 
   for (const fixture of [
@@ -154,19 +134,7 @@ it.layer(testLayer)("CodexDriver", (it) => {
         yield* fs.chmod(realBinaryPath, 0o755);
         yield* fs.symlink(realBinaryPath, binaryPath);
 
-        const instance = yield* CodexDriver.create({
-          instanceId: ProviderInstanceId.make("codex-installer"),
-          displayName: "Codex installer test",
-          enabled: false,
-          environment: [],
-          config: {
-            ...CodexDriver.defaultConfig(),
-            binaryPath,
-            homePath: NodePath.join(tempDir, "codex-home"),
-          },
-        });
-
-        const update = (yield* instance.snapshot.resolveMaintenance()).update;
+        const update = (yield* resolve(codexIn(tempDir), binaryPath)).update;
         if (fixture.npmOwned) {
           expect(update).toMatchObject({
             executable: "npm",
@@ -182,10 +150,7 @@ it.layer(testLayer)("CodexDriver", (it) => {
         } else {
           expect(update).toBeNull();
         }
-      }).pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn),
-        Effect.scoped,
-      ),
+      }).pipe(Effect.scoped),
     );
   }
 
@@ -207,23 +172,8 @@ it.layer(testLayer)("CodexDriver", (it) => {
         );
         yield* fs.chmod(binaryPath, 0o755);
 
-        const instance = yield* CodexDriver.create({
-          instanceId: ProviderInstanceId.make(`codex-mise-${layout}`),
-          displayName: "Codex mise test",
-          enabled: false,
-          environment: [],
-          config: {
-            ...CodexDriver.defaultConfig(),
-            binaryPath,
-            homePath: NodePath.join(tempDir, "codex-home"),
-          },
-        });
-
-        expect((yield* instance.snapshot.resolveMaintenance()).update).toBeNull();
-      }).pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn),
-        Effect.scoped,
-      ),
+        expect((yield* resolve(codexIn(tempDir), binaryPath)).update).toBeNull();
+      }).pipe(Effect.scoped),
     );
   }
 
@@ -323,18 +273,12 @@ it.layer(testLayer)("CodexDriver", (it) => {
             }),
           );
         });
-        const instance = yield* CodexDriver.create({
-          instanceId: ProviderInstanceId.make("codex-mise-shim"),
-          displayName: "Codex shim test",
-          enabled: false,
-          environment: [{ name: "PATH", value: lookupPath, sensitive: false }],
-          config: {
-            ...CodexDriver.defaultConfig(),
-            binaryPath: fixture.commandName,
-            homePath: NodePath.join(tempDir, "codex-home"),
-          },
-        }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, metadataSpawner));
-        const capabilities = yield* instance.snapshot.resolveMaintenance();
+        const capabilities = yield* resolve(
+          codexIn(tempDir),
+          fixture.commandName,
+          { ...process.env, PATH: lookupPath },
+          metadataSpawner,
+        );
         const latestVersion = yield* resolveLatestProviderVersion(capabilities).pipe(
           Effect.provideService(
             ProviderVersionCache,
@@ -347,7 +291,7 @@ it.layer(testLayer)("CodexDriver", (it) => {
         expect(latestVersion).toBe("0.153.4");
         expect(
           createProviderVersionAdvisory({
-            driver: CodexDriver.driverKind,
+            driver: ProviderDriverKind.make("codex"),
             currentVersion: fixture.version,
             latestVersion,
             maintenanceCapabilities: capabilities,
@@ -368,5 +312,65 @@ it.layer(testLayer)("CodexDriver", (it) => {
         }
       }).pipe(Effect.scoped),
     { skip: windowsHost },
+  );
+});
+
+it.layer(testLayer)("cursor update", (it) => {
+  it.effect.skipIf(windowsHost)(
+    "quotes a configured executable path in the copyable update command",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cursor-update-" });
+        const binaryPath = NodePath.join(tempDir, "Cursor Tools", "bin", "cursor-agent");
+        yield* writeStub(binaryPath);
+
+        const capabilities = yield* resolve(CURSOR_UPDATE, binaryPath);
+        expect(capabilities.update).toMatchObject({
+          command: `'${binaryPath}' update`,
+          executable: binaryPath,
+          args: ["update"],
+        });
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("stays manual-only when the configured executable does not exist", () =>
+    Effect.gen(function* () {
+      const binaryPath = NodePath.join(NodeOS.tmpdir(), "t3-cursor-missing", "cursor-agent");
+      expect((yield* resolve(CURSOR_UPDATE, binaryPath)).update).toBeNull();
+    }),
+  );
+});
+
+it.layer(testLayer)("grok update", (it) => {
+  it.effect.skipIf(windowsHost)("updates through the configured executable's own updater", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-grok-update-" });
+      const grokHome = NodePath.join(tempDir, "Grok Home");
+      const binaryPath = NodePath.join(grokHome, "bin", "grok");
+      yield* writeStub(binaryPath);
+
+      const capabilities = yield* resolve(GROK_UPDATE, binaryPath, {
+        ...process.env,
+        GROK_HOME: grokHome,
+      });
+      expect(capabilities.packageName).toBe("@xai-official/grok");
+      expect(capabilities.update).toMatchObject({
+        command: `'${binaryPath}' update`,
+        executable: binaryPath,
+        args: ["update"],
+      });
+      // `grok update` installs under GROK_HOME, so it must target this environment's home.
+      expect(capabilities.update?.env?.GROK_HOME).toBe(grokHome);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("stays manual-only when the configured executable does not exist", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-grok-missing-" });
+      expect((yield* resolve(GROK_UPDATE, NodePath.join(tempDir, "grok"))).update).toBeNull();
+    }).pipe(Effect.scoped),
   );
 });

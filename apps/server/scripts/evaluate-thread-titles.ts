@@ -8,14 +8,15 @@ import * as NodeUtil from "node:util";
 import * as NodeCrypto from "node:crypto";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { CodexSettings, ProviderInstanceId } from "@t3tools/contracts";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Duration from "effect/Duration";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import * as CodexTextGeneration from "../src/textGeneration/CodexTextGeneration.ts";
+import { AnyagentRuntimeLive } from "../src/provider/anyagent/AnyagentRuntime.ts";
+import { makeAnyagentTextGeneration } from "../src/provider/anyagent/AnyagentTextGeneration.ts";
 import { threadTitleEvaluationCases } from "./threadTitleEvaluationCases.ts";
 import {
   formatThreadTitleContext,
@@ -58,7 +59,6 @@ const Results = Schema.fromJsonString(
   ),
 );
 const decodeResults = Schema.decodeUnknownEffect(Results);
-const decodeSettings = Schema.decodeUnknownEffect(CodexSettings);
 const encodeReport = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 await Effect.runPromise(
@@ -66,8 +66,11 @@ await Effect.runPromise(
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-title-evaluation-" });
-    const generation = yield* CodexTextGeneration.makeCodexTextGeneration(
-      yield* decodeSettings({}),
+    // Codex through anyagent; only the picked model reaches the agent.
+    const generation = yield* makeAnyagentTextGeneration(
+      ProviderDriverKind.make("codex"),
+      "codex",
+      () => new Set(["model"]),
     );
     const baseline = values.baseline
       ? yield* fs.readFileString(values.baseline).pipe(Effect.flatMap(decodeResults))
@@ -168,6 +171,7 @@ await Effect.runPromise(
           ServerConfig.layerTest(process.cwd(), { prefix: "t3-title-evaluation-state-" }),
         ),
         Layer.provideMerge(NodeServices.layer),
+        Layer.provideMerge(AnyagentRuntimeLive),
       ),
     ),
     Effect.scoped,
