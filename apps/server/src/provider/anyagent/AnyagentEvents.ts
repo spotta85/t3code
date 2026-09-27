@@ -185,6 +185,19 @@ export function sessionStartedEvent(
   };
 }
 
+/** Shown when a thread's stored cursor came from T3's pre-anyagent adapters. */
+export const PRE_PORT_RESUME_WARNING =
+  "Provider session from before the anyagent port could not be resumed; started a new session";
+
+/** The one warning a thread gets when its pre-port cursor was dropped for a fresh session. */
+export function prePortResumeWarning(ctx: SessionContext, at: string): ProviderRuntimeEvent {
+  return {
+    ...sessionBase(ctx, "pre-port-resume", at),
+    type: "runtime.warning",
+    payload: { message: PRE_PORT_RESUME_WARNING },
+  };
+}
+
 /**
  * T3's view of a session stream ending: graceful on close; on a session error
  * (AuthRequired, ProcessExited, ...) a runtime.error with the error body, then

@@ -22,10 +22,12 @@ Features anyagent does not have yet are listed in anyagent's `docs/ports/t3-code
 ## Threads created before the port
 
 They cannot resume their provider session. The old adapters stored an object-shaped resume
-cursor; the anyagent adapter refuses it with a typed `ProviderAdapterValidationError` ("The resume
-cursor is not an anyagent resume token.") instead of guessing. T3 keeps that stored cursor in the
-thread's binding and offers it again on every turn, so each new turn on such a thread fails with
-that error. Start a new thread to continue; the old transcript stays readable.
+cursor, which anyagent cannot decode. On the next turn the adapter opens a fresh session instead
+and adds one warning to the thread: "Provider session from before the anyagent port could not be
+resumed; started a new session". The new session's cursor, when the agent has one, replaces the
+old one. The agent does not see the earlier turns; the transcript stays readable in T3. A cursor
+anyagent recognizes but no longer knows (`ResumeFailed`) still fails the turn with a typed
+error.
 
 ## Dropped by the port
 
@@ -42,6 +44,13 @@ that error. Start a new thread to continue; the old transcript stays readable.
 
 ## Not wired yet (anyagent has it, the adapter does not use it)
 
-- **T3's `t3-code` MCP server** (browser preview, devices, pull-request linking). The old adapters
-  attached it to every session; anyagent accepts `mcp_servers` at `open`.
 - **Usage limits on provider cards.** anyagent-ts has `planUsage`; the snapshot does not read it.
+
+## T3's `t3-code` MCP server
+
+Browser preview, devices and pull-request linking reach the agent through T3's own MCP server.
+The adapter declares it at `open` (HTTP, with the thread's bearer header) for agents whose probe
+takes HTTP MCP servers: claude, codex, and ACP agents that advertise HTTP. Claude connects to it.
+Codex does not yet: anyagent passes the declaration where `codex app-server` ignores it (gaps row
+"Codex ignores declared MCP servers"). OpenCode and Antigravity refuse client-declared MCP servers
+in anyagent, so the adapter does not declare it for them.

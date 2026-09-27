@@ -14,7 +14,15 @@ import {
   type ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import type { AgentDetails, Delivery, Event, Question, QuestionAnswer, Session } from "anyagent-ts";
+import type {
+  AgentDetails,
+  Delivery,
+  Event,
+  McpServer,
+  Question,
+  QuestionAnswer,
+  Session,
+} from "anyagent-ts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
@@ -23,6 +31,7 @@ import * as Stream from "effect/Stream";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
   ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
@@ -32,6 +41,7 @@ import type { ProviderAdapterShape, ProviderThreadSnapshot } from "../Services/P
 import {
   type OpenRequest,
   permissionChoice,
+  prePortResumeWarning,
   sessionExitedEvents,
   sessionStartedEvent,
   toProviderRuntimeEvents,
@@ -100,23 +110,20 @@ export const makeAnyagentAdapter = (
 
     const startSession: Adapter["startSession"] = (input) =>
       Effect.gen(function* () {
-        const resume = input.resumeCursor;
-        if (resume !== undefined && typeof resume !== "string") {
-          return yield* new ProviderAdapterValidationError({
-            provider: kind,
-            operation: "startSession",
-            issue: "The resume cursor is not an anyagent resume token.",
-          });
-        }
+        // A cursor from T3's pre-anyagent adapters (an object) cannot resume: open fresh and say so.
+        const resume = typeof input.resumeCursor === "string" ? input.resumeCursor : undefined;
+        const prePort = input.resumeCursor !== undefined && resume === undefined;
         yield* stopSession(input.threadId);
         const cwd = input.cwd ?? config.cwd;
         const configure = selectedOptions(kind, input.modelSelection, openableOptions(details()));
+        const mcpServers = t3McpServers(input.threadId, details());
         const session = yield* call(input.threadId, "open", () =>
           use((runtime) =>
             runtime.open(agent, {
               dir: cwd,
               permission_mode: input.runtimeMode === "full-access" ? "AutoApprove" : "Ask",
               ...(resume !== undefined ? { resume } : {}),
+              ...(mcpServers.length > 0 ? { mcp_servers: mcpServers } : {}),
               ...(Object.keys(configure).length > 0 ? { configure } : {}),
             }),
           ),
@@ -139,6 +146,7 @@ export const makeAnyagentAdapter = (
         };
         threads.set(input.threadId, thread);
         yield* Queue.offer(events, sessionStartedEvent(context(kind, thread), session.info, now));
+        if (prePort) yield* Queue.offer(events, prePortResumeWarning(context(kind, thread), now));
         yield* pump(thread).pipe(Effect.forkIn(scope));
         return view(kind, thread);
       });
@@ -398,6 +406,18 @@ function resumeCursor(t: Thread): { resumeCursor?: string } {
 /** The turns seen so far; T3 keeps the transcript itself, so items stay empty. */
 function snapshot(t: Thread): ProviderThreadSnapshot {
   return { threadId: t.threadId, turns: t.history.map((id) => ({ id, items: [] })) };
+}
+
+/**
+ * T3's own `t3-code` MCP server (browser preview, devices, PR linking) for this thread, as
+ * ProviderService issued it. Only for agents whose probe takes HTTP MCP servers: anyagent
+ * refuses the others (opencode, antigravity) at open, see gaps.md.
+ */
+function t3McpServers(threadId: ThreadId, details: AgentDetails | null): McpServer[] {
+  const mcp = McpProviderSession.readMcpProviderSession(threadId);
+  if (!mcp || !details?.capabilities.mcp_transports.includes("Http")) return [];
+  const headers = { Authorization: mcp.authorizationHeader };
+  return [{ name: "t3-code", connection: { Http: { url: mcp.endpoint, headers } } }];
 }
 
 /** The session-level fields every mapped event carries. */

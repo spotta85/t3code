@@ -9,16 +9,21 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import {
   ApprovalRequestId,
+  EnvironmentId,
   ProviderDriverKind,
+  ProviderInstanceId,
   type ProviderRuntimeEvent,
   ThreadId,
 } from "@t3tools/contracts";
+import type { McpTransport, OpenOptions, Runtime } from "anyagent-ts";
 
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import type { AnyagentAdapterError } from "./Errors.ts";
 import { makeAnyagentAdapter } from "./AnyagentAdapter.ts";
-import { makeAnyagentRuntimeLayer } from "./AnyagentRuntime.ts";
+import { PRE_PORT_RESUME_WARNING } from "./AnyagentEvents.ts";
+import { AnyagentRuntime, makeAnyagentRuntimeLayer } from "./AnyagentRuntime.ts";
 
 // The anyagent checkout next to this one; its release binary is built with `--features mock`.
 const ANYAGENT = NodePath.resolve(import.meta.dirname, "../../../../../../anyagent");
@@ -257,11 +262,77 @@ describe("AnyagentAdapter over the mock binary", () => {
         const stale = yield* start("mock-token");
         expect(stale).toMatchObject({ _tag: "ProviderAdapterRequestError" });
         expect(stale.message).toContain("ResumeFailed");
-        const foreign = yield* start({ schemaVersion: 1, sessionId: "old-adapter" });
-        expect(foreign).toMatchObject({ _tag: "ProviderAdapterValidationError" });
         expect(yield* adapter.hasSession(A)).toBe(false);
       }),
     ),
+  );
+
+  it.live("a cursor from T3's pre-anyagent adapters opens a fresh session with one warning", () =>
+    run("resume", (adapter, waitFor, seen, opened) =>
+      Effect.gen(function* () {
+        const session = yield* adapter.startSession({
+          threadId: A,
+          cwd,
+          runtimeMode: "approval-required",
+          resumeCursor: { schemaVersion: 1, sessionId: "old-adapter" },
+        });
+        expect(session).toMatchObject({ threadId: A, status: "ready", resumeCursor: "mock-token" });
+        expect(opened()[0]?.resume).toBeUndefined();
+        yield* waitFor((e) => e.type === "runtime.warning");
+        expect(summary(seen())).toEqual(["session.started", "runtime.warning"]);
+        expect(seen()[1]).toMatchObject({ payload: { message: PRE_PORT_RESUME_WARNING } });
+        expect(yield* adapter.hasSession(A)).toBe(true);
+      }),
+    ),
+  );
+
+  it.live("attaches T3's t3-code MCP server when the agent takes HTTP MCP servers", () =>
+    Effect.gen(function* () {
+      McpProviderSession.setMcpProviderSession({
+        environmentId: EnvironmentId.make("env-1"),
+        threadId: A,
+        providerSessionId: "provider-session-1",
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        endpoint: "http://127.0.0.1:3773/mcp",
+        authorizationHeader: "Bearer secret",
+        capabilities: new Set(["preview"]),
+      });
+      const startBoth = (adapter: Adapter) =>
+        Effect.gen(function* () {
+          yield* adapter.startSession({ threadId: A, cwd, runtimeMode: "approval-required" });
+          yield* adapter.startSession({ threadId: B, cwd, runtimeMode: "approval-required" });
+        });
+      // The mock advertises no MCP transports: nothing is declared, so open cannot be refused.
+      yield* run("turn", (adapter, _waitFor, _seen, opened) =>
+        Effect.gen(function* () {
+          yield* startBoth(adapter);
+          expect(opened().map((o) => o.mcp_servers)).toEqual([undefined, undefined]);
+        }),
+      );
+      // An agent that takes HTTP servers gets the thread's server; a thread without one gets none.
+      yield* run(
+        "turn",
+        (adapter, _waitFor, _seen, opened) =>
+          Effect.gen(function* () {
+            yield* startBoth(adapter);
+            expect(opened().map((o) => o.mcp_servers)).toEqual([
+              [
+                {
+                  name: "t3-code",
+                  connection: {
+                    Http: {
+                      url: "http://127.0.0.1:3773/mcp",
+                      headers: { Authorization: "Bearer secret" },
+                    },
+                  },
+                },
+              ],
+              undefined,
+            ]);
+          }),
+        { mcpTransports: ["Http"] },
+      );
+    }).pipe(Effect.ensuring(Effect.sync(() => McpProviderSession.clearMcpProviderSession(A)))),
   );
 });
 
@@ -274,21 +345,45 @@ type WaitFor = (match: (e: ProviderRuntimeEvent) => boolean) => Effect.Effect<Pr
 /**
  * Runs `body` against an adapter over `anyagent serve --mock <script>.json`.
  * Every event the adapter emits is collected; `waitFor` polls them and, after
- * 5 s, dies listing what it saw.
+ * 5 s, dies listing what it saw. `opened` lists the options of every `open` sent.
+ * `mcpTransports` overrides the mock's probe (it advertises none).
  */
 function run<A, E>(
   script: string,
-  body: (adapter: Adapter, waitFor: WaitFor, seen: () => Seen) => Effect.Effect<A, E>,
+  body: (
+    adapter: Adapter,
+    waitFor: WaitFor,
+    seen: () => Seen,
+    opened: () => ReadonlyArray<OpenOptions>,
+  ) => Effect.Effect<A, E>,
+  options: { readonly mcpTransports?: McpTransport[] } = {},
 ) {
+  const opens: OpenOptions[] = [];
+  const mock = makeAnyagentRuntimeLayer({
+    bin: BIN,
+    mock: NodePath.join(ANYAGENT, `packages/mock-scripts/${script}.json`),
+  });
   const layer = Layer.mergeAll(
-    makeAnyagentRuntimeLayer({
-      bin: BIN,
-      mock: NodePath.join(ANYAGENT, `packages/mock-scripts/${script}.json`),
-    }),
+    Layer.effect(
+      AnyagentRuntime,
+      Effect.map(AnyagentRuntime, ({ use }) => ({
+        use: <T>(f: (runtime: Runtime) => Promise<T>) =>
+          use((runtime) => f(recordingOpens(runtime, opens))),
+      })),
+    ).pipe(Layer.provide(mock)),
     ServerConfig.layerTest(cwd, { prefix: "t3-anyagent-" }).pipe(Layer.provide(NodeServices.layer)),
   );
   return Effect.gen(function* () {
-    const adapter = yield* makeAnyagentAdapter(KIND, "mock");
+    const { use } = yield* AnyagentRuntime;
+    const { mcpTransports } = options;
+    const probed = mcpTransports
+      ? yield* Effect.promise(() => use((runtime) => runtime.probe("mock")))
+      : undefined;
+    const details = probed && {
+      ...probed,
+      capabilities: { ...probed.capabilities, mcp_transports: mcpTransports! },
+    };
+    const adapter = yield* makeAnyagentAdapter(KIND, "mock", details && (() => details));
     const events: ProviderRuntimeEvent[] = [];
     yield* Stream.runForEach(adapter.streamEvents, (e) => Effect.sync(() => events.push(e))).pipe(
       Effect.forkScoped,
@@ -307,8 +402,28 @@ function run<A, E>(
             Effect.die(new Error(`[${script}] timed out; saw: ${summary(events).join(" | ")}`)),
         }),
       );
-    return yield* body(adapter, waitFor, () => events);
+    return yield* body(
+      adapter,
+      waitFor,
+      () => events,
+      () => opens,
+    );
   }).pipe(Effect.scoped, Effect.provide(layer));
+}
+
+/** `runtime` with every `open`'s options pushed to `opens` first. */
+function recordingOpens(runtime: Runtime, opens: OpenOptions[]): Runtime {
+  return new Proxy(runtime, {
+    get: (target, key) => {
+      if (key === "open")
+        return (agent: string, opts: OpenOptions) => {
+          opens.push(opts);
+          return target.open(agent, opts);
+        };
+      const value = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
 }
 
 /** Each event as `type`, plus the detail a test pins: delta text, item type, decision, turn state. */
