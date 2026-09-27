@@ -380,7 +380,7 @@ describe("AnyagentAdapter over the mock binary", () => {
   );
 
   it.live(
-    "the permission request after a plan is declined by the adapter; a later one is surfaced",
+    "the permission request after a plan is denied with upstream's message; a later one is surfaced",
     () =>
       run("plan-exit", (adapter, waitFor, seen, _opened, answered) =>
         Effect.gen(function* () {
@@ -391,7 +391,9 @@ describe("AnyagentAdapter over the mock binary", () => {
             interactionMode: "plan",
           });
           yield* waitFor((e) => e.type === "turn.completed" && e.turnId === plan.turnId);
-          expect(answered()).toEqual([{ request: "exit-1", answer: { Permission: "DenyOnce" } }]);
+          const message =
+            "The client captured your proposed plan. Stop here and wait for the user's feedback or implementation request in a later turn.";
+          expect(answered()).toEqual([{ request: "exit-1", answer: { Deny: { message } } }]);
           expect(summary(seen().filter((e) => e.turnId === plan.turnId))).toEqual([
             "turn.started",
             "turn.proposed.completed",

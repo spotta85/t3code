@@ -55,7 +55,6 @@ import {
   freshSessionWarning,
   type OpenRequest,
   permissionAnswer,
-  permissionChoice,
   PRE_PORT_RESUME_WARNING,
   RESUME_FAILED_WARNING,
   sessionExitedEvents,
@@ -127,12 +126,11 @@ export const makeAnyagentAdapter = (
         );
       });
 
-    /** Declines the agent's exit-plan request; false when it offers no decline or the answer fails, so T3 shows it. */
+    /** Denies the agent's exit-plan request with upstream T3's message; false when it offers no deny or the answer fails. */
     const declined = (t: Thread, request: PermissionRequest) => {
-      const choice = permissionChoice("decline", request.options);
-      if (!request.options.includes(choice)) return Effect.succeed(false);
+      if (!request.options.includes("DenyOnce")) return Effect.succeed(false);
       return call(t.threadId, "answer", () =>
-        t.session.answer(request.id, { Permission: choice }),
+        t.session.answer(request.id, { Deny: { message: PLAN_CAPTURED } }),
       ).pipe(
         Effect.as(true),
         Effect.catch(() => Effect.succeed(false)),
@@ -399,6 +397,10 @@ interface Thread {
 }
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+
+/** What claude is told when T3 keeps its plan (upstream T3's ClaudeAdapter wording). */
+const PLAN_CAPTURED =
+  "The client captured your proposed plan. Stop here and wait for the user's feedback or implementation request in a later turn.";
 
 /** anyagent's permission mode for each T3 runtime mode. */
 const PERMISSION_MODE: Record<ProviderSession["runtimeMode"], PermissionMode> = {

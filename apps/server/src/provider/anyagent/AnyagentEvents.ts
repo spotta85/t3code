@@ -281,23 +281,18 @@ export function sessionExitedEvents(
   ];
 }
 
-/** T3's decision as anyagent's answer: cancel withdraws the request (claude and codex approvals end the turn too). */
+/**
+ * T3's decision as anyagent's answer: cancel withdraws the request (claude and codex approvals end the turn too);
+ * otherwise the offered choice that carries it, "always" falling back to once when not offered.
+ */
 export function permissionAnswer(
   decision: ProviderApprovalDecision,
   offered: ReadonlyArray<PermissionChoice>,
 ): Answer {
-  return decision === "cancel" ? "Cancel" : { Permission: permissionChoice(decision, offered) };
-}
-
-/** The offered choice that carries T3's decision; "always" falls back to once when not offered. */
-export function permissionChoice(
-  decision: ProviderApprovalDecision,
-  offered: ReadonlyArray<PermissionChoice>,
-): PermissionChoice {
-  const wanted =
-    decision === "acceptAlways" ? "acceptForSession" : decision === "cancel" ? "decline" : decision;
+  if (decision === "cancel") return "Cancel";
+  const wanted = decision === "acceptAlways" ? "acceptForSession" : decision;
   const found = offered.find((choice) => CHOICES[choice].decision === wanted);
-  return found ?? (wanted === "decline" ? "DenyOnce" : "AllowOnce");
+  return { Permission: found ?? (wanted === "decline" ? "DenyOnce" : "AllowOnce") };
 }
 
 /** A full plan-usage report as T3's usage limits: its windows, banked resets when reported, and when it was read. */
