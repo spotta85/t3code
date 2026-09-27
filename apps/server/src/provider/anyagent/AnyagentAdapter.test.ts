@@ -286,6 +286,23 @@ describe("AnyagentAdapter over the mock binary", () => {
     ),
   );
 
+  it.live("a null cursor (none stored yet) opens a fresh session without a warning", () =>
+    run("resume", (adapter, waitFor, seen, opened) =>
+      Effect.gen(function* () {
+        yield* adapter.startSession({
+          threadId: A,
+          cwd,
+          runtimeMode: "approval-required",
+          resumeCursor: null,
+        });
+        expect(opened()[0]?.resume).toBeUndefined();
+        yield* waitFor((e) => e.type === "session.started");
+        yield* Effect.sleep("100 millis");
+        expect(summary(seen())).toEqual(["session.started"]);
+      }),
+    ),
+  );
+
   it.live("attaches T3's t3-code MCP server when the agent takes HTTP MCP servers", () =>
     Effect.gen(function* () {
       McpProviderSession.setMcpProviderSession({
@@ -332,6 +349,16 @@ describe("AnyagentAdapter over the mock binary", () => {
           }),
         { mcpTransports: ["Http"] },
       );
+      // Codex takes Http but gets nothing yet: anyagent would put the bearer in its argv (gaps.md).
+      yield* run(
+        "turn",
+        (adapter, _waitFor, _seen, opened) =>
+          Effect.gen(function* () {
+            yield* startBoth(adapter);
+            expect(opened().map((o) => o.mcp_servers)).toEqual([undefined, undefined]);
+          }),
+        { mcpTransports: ["Http"], kind: "codex" },
+      );
     }).pipe(Effect.ensuring(Effect.sync(() => McpProviderSession.clearMcpProviderSession(A)))),
   );
 });
@@ -346,7 +373,7 @@ type WaitFor = (match: (e: ProviderRuntimeEvent) => boolean) => Effect.Effect<Pr
  * Runs `body` against an adapter over `anyagent serve --mock <script>.json`.
  * Every event the adapter emits is collected; `waitFor` polls them and, after
  * 5 s, dies listing what it saw. `opened` lists the options of every `open` sent.
- * `mcpTransports` overrides the mock's probe (it advertises none).
+ * `mcpTransports` overrides the mock's probe (it advertises none); `kind` replaces claudeAgent.
  */
 function run<A, E>(
   script: string,
@@ -356,7 +383,7 @@ function run<A, E>(
     seen: () => Seen,
     opened: () => ReadonlyArray<OpenOptions>,
   ) => Effect.Effect<A, E>,
-  options: { readonly mcpTransports?: McpTransport[] } = {},
+  options: { readonly mcpTransports?: McpTransport[]; readonly kind?: string } = {},
 ) {
   const opens: OpenOptions[] = [];
   const mock = makeAnyagentRuntimeLayer({
@@ -383,7 +410,8 @@ function run<A, E>(
       ...probed,
       capabilities: { ...probed.capabilities, mcp_transports: mcpTransports! },
     };
-    const adapter = yield* makeAnyagentAdapter(KIND, "mock", details && (() => details));
+    const kind = options.kind ? ProviderDriverKind.make(options.kind) : KIND;
+    const adapter = yield* makeAnyagentAdapter(kind, "mock", details && (() => details));
     const events: ProviderRuntimeEvent[] = [];
     yield* Stream.runForEach(adapter.streamEvents, (e) => Effect.sync(() => events.push(e))).pipe(
       Effect.forkScoped,

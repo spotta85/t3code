@@ -111,12 +111,13 @@ export const makeAnyagentAdapter = (
     const startSession: Adapter["startSession"] = (input) =>
       Effect.gen(function* () {
         // A cursor from T3's pre-anyagent adapters (an object) cannot resume: open fresh and say so.
+        // null is "no cursor": the session directory stores it when none was ever set.
         const resume = typeof input.resumeCursor === "string" ? input.resumeCursor : undefined;
-        const prePort = input.resumeCursor !== undefined && resume === undefined;
+        const prePort = typeof input.resumeCursor === "object" && input.resumeCursor !== null;
         yield* stopSession(input.threadId);
         const cwd = input.cwd ?? config.cwd;
         const configure = selectedOptions(kind, input.modelSelection, openableOptions(details()));
-        const mcpServers = t3McpServers(input.threadId, details());
+        const mcpServers = t3McpServers(kind, input.threadId, details());
         const session = yield* call(input.threadId, "open", () =>
           use((runtime) =>
             runtime.open(agent, {
@@ -413,7 +414,14 @@ function snapshot(t: Thread): ProviderThreadSnapshot {
  * ProviderService issued it. Only for agents whose probe takes HTTP MCP servers: anyagent
  * refuses the others (opencode, antigravity) at open, see gaps.md.
  */
-function t3McpServers(threadId: ThreadId, details: AgentDetails | null): McpServer[] {
+function t3McpServers(
+  kind: ProviderDriverKind,
+  threadId: ThreadId,
+  details: AgentDetails | null,
+): McpServer[] {
+  // Not codex yet: anyagent passes the bearer in codex's argv, and codex ignores the server
+  // (gaps.md "Codex ignores declared MCP servers").
+  if (kind === "codex") return [];
   const mcp = McpProviderSession.readMcpProviderSession(threadId);
   if (!mcp || !details?.capabilities.mcp_transports.includes("Http")) return [];
   const headers = { Authorization: mcp.authorizationHeader };

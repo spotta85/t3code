@@ -50,7 +50,7 @@ error.
 
 Browser preview, devices and pull-request linking reach the agent through T3's own MCP server.
 The adapter declares it at `open` (HTTP, with the thread's bearer header) for agents whose probe
-takes HTTP MCP servers: claude, codex, and ACP agents that advertise HTTP. Claude connects to it.
-Codex does not yet: anyagent passes the declaration where `codex app-server` ignores it (gaps row
+takes HTTP MCP servers; claude connects to it. Codex is skipped for now: anyagent would put the
+bearer token in codex's command line, and `codex app-server` ignores the server anyway (gaps row
 "Codex ignores declared MCP servers"). OpenCode and Antigravity refuse client-declared MCP servers
-in anyagent, so the adapter does not declare it for them.
+in anyagent, so the adapter does not declare it for them either.

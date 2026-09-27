@@ -22,9 +22,15 @@ and removal must respect those leases instead of replacing executables under a r
 
 ## Setup must not happen as a health-check side effect
 
-Opening a provider session can start MCP servers, run hooks, or launch a login browser. Background
-status checks therefore use anyagent's `probe`, which reports install, version, auth and models
-without opening a session.
+Opening a provider session can start MCP servers, run hooks, or launch a login browser. The rule
+is that a background status check must not open one: the old Grok probes avoided authentication and
+session creation, and Antigravity reserved authenticated catalog sessions for explicit setup or
+model refresh.
+
+The anyagent drivers do not meet this rule yet. Their status check is anyagent's `probe`, which
+opens a throwaway session in a temp directory (about a second) and closes it, so the agent's hooks
+and user-configured MCP servers can start during a background refresh. A session-free check is a
+gaps row in anyagent ("Session-free status check").
 
 ## Provider updates run only through the owning installer
 
