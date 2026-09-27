@@ -11,21 +11,21 @@
  *
  * Without --url it starts `t3 serve` headless on a free port with a fresh base dir
  * (needs ANYAGENT_BIN or the default sibling checkout), issues a token, stops it at the end.
- * Every frame sent and received goes to `port-check-<agent>-<timestamp>.log` in the out dir.
+ * Every frame sent and received goes to `port-check-<agent>-<timestamp>.log` in the out dir
+ * ($PORT_CHECK_OUT, else <os tmpdir>/anyagent-port-check).
  */
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeNet from "node:net";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 /** Wire JSON, read field by field. */
 type Obj = Record<string, any>;
 
 const FORK = NodePath.resolve(import.meta.dirname, "..");
-const OUT =
-  process.env.PORT_CHECK_OUT ??
-  "/private/tmp/claude-501/-Users-spotta-Desktop-Projects-anyagent/25d99f8a-132e-4e0a-9dda-09d234fbca38/scratchpad";
+const OUT = process.env.PORT_CHECK_OUT ?? NodePath.join(NodeOS.tmpdir(), "anyagent-port-check");
 const ANYAGENT_BIN =
   process.env.ANYAGENT_BIN ?? NodePath.resolve(FORK, "../anyagent/target/release/anyagent");
 
@@ -94,7 +94,7 @@ const ROWS: Row[] = [
     id: "cancel",
     ms: 180_000,
     passes:
-      "interrupt after the first delta ends the turn early (2nd turn queued); next turn works",
+      "interrupt after the first delta ends the turn early as cancelled (2nd turn queued); next turn works",
     run: cancel,
   },
   {
@@ -138,6 +138,7 @@ async function main(): Promise<void> {
     return;
   }
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  NodeFS.mkdirSync(NodePath.join(OUT, "port-check-dirs"), { recursive: true });
   const server = flags.url
     ? {
         url: flags.url,
@@ -325,8 +326,9 @@ async function modelSwitch(ctx: Ctx): Promise<string> {
     (await provider(ctx)).models.find((m: Obj) => m.slug !== ctx.spec.model)?.slug;
   const second = await runTurn(ctx, t, PONG, { modelSelection: selection(ctx, target) });
   expect(second.status === "ready", `switched turn ended ${second.status}: ${second.lastError}`);
-  await sleep(1500); // T3's event log writes in 1s batches
-  const configured = providerEvents(ctx, t).filter((e) => e.type === "session.configured");
+  const configured = (await flushedProviderEvents(ctx, t)).filter(
+    (e) => e.type === "session.configured",
+  );
   const models = configured.map((e) => e.payload?.config?.model).filter((m) => m !== undefined);
   expect(
     models.includes(target),
@@ -337,7 +339,8 @@ async function modelSwitch(ctx: Ctx): Promise<string> {
 
 /**
  * A long turn; after its first text delta a second turn is queued, then the first is interrupted.
- * It must end early (no "400"), and a fresh turn afterwards must still answer.
+ * It must end early (no "2000") as cancelled, and a fresh turn afterwards must still answer.
+ * T3 settles a cancelled turn as session "ready", so "cancelled" is read from T3's provider log.
  */
 async function cancel(ctx: Ctx): Promise<string> {
   const t = await openThread(ctx, "cancel");
@@ -366,7 +369,16 @@ async function cancel(ctx: Ctx): Promise<string> {
   const queued = await settle(ctx, t, from, { done: (text) => /pear/i.test(text), ms: 60_000 });
   const next = await runTurn(ctx, t, "Reply with the single word plum. No tools.");
   const errors = errorActivities(t, from);
+  const state = ctx.server.baseDir
+    ? ((await flushedProviderEvents(ctx, t)).find(
+        (e) => e.type === "turn.completed" && e.turnId === turnId,
+      )?.payload.state ?? "missing")
+    : "not checked (--url: no provider log)";
   expect(!/\b2000\b/.test(cancelled), `cancelled turn ran to the end (${cancelled.length} chars)`);
+  expect(
+    state === "cancelled" || !ctx.server.baseDir,
+    `provider turn.completed state ${state} for ${turnId}, want cancelled`,
+  );
   expect(
     next.status === "ready" && /plum/i.test(next.text),
     `turn after cancel: ${next.status} ${quote(next.text)}`,
@@ -375,7 +387,7 @@ async function cancel(ctx: Ctx): Promise<string> {
   const pear = /pear/i.test(queued.text)
     ? "queued turn answered pear"
     : "queued prompt folded into the cancelled turn";
-  return `turn ended ${ended.s.status} at ${cancelled.length} chars (${queued.transitions}); ${pear}; next turn replied ${quote(next.text)}`;
+  return `turn ended ${ended.s.status} at ${cancelled.length} chars, provider state ${state} (${queued.transitions}); ${pear}; next turn replied ${quote(next.text)}`;
 }
 
 /** Stop the session, delete the file, then a new turn must restart from the resume cursor and recall it. */
@@ -476,12 +488,14 @@ async function generate(ctx: Ctx): Promise<string> {
     const t = await openThread(ctx, "generate", { title: "New thread" });
     await sendTurn(ctx, t, "How do I rename a git branch? Reply in one short sentence. No tools.");
     ctx.step = "generated title (polling the thread over HTTP; titles ride the shell stream)";
-    for (;;) {
+    const deadline = Date.now() + 150_000; // inside the row timeout, so `finally` restores in time
+    while (Date.now() < deadline) {
       const { thread } = (await httpGet(ctx, `/api/orchestration/threads/${t.threadId}`)) as Obj;
       if (thread.title !== "New thread")
         return `title ${quote(thread.title)} (titleState ${JSON.stringify(thread.titleState)})`;
       await sleep(1000);
     }
+    throw new Error("no generated title after 150s");
   } finally {
     await ctx.rpc
       .call("server.updateSettings", { patch: { textGenerationModelSelection: before } })
@@ -697,8 +711,8 @@ async function cleanupRow(ctx: Ctx): Promise<void> {
     ctx.log.line(`cleanup stop failed: ${e.message}`),
   );
   t.events.close();
-  await sleep(1500); // T3's event log writes in 1s batches
-  for (const e of providerEvents(ctx, t)) ctx.log.line(`provider-event ${JSON.stringify(e)}`);
+  for (const e of await flushedProviderEvents(ctx, t))
+    ctx.log.line(`provider-event ${JSON.stringify(e)}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -759,6 +773,12 @@ function providerEvents(ctx: Ctx, t: Thread): Obj[] {
     }
   }
   return out;
+}
+
+/** providerEvents after T3's event log has flushed (it writes in 1s batches). */
+async function flushedProviderEvents(ctx: Ctx, t: Thread): Promise<Obj[]> {
+  await sleep(1500);
+  return providerEvents(ctx, t);
 }
 
 const isSessionSet = (e: Obj) => e.type === "thread.session-set";
@@ -893,7 +913,6 @@ function parseFlags(argv: string[]): Flags {
 
 /** Starts `t3 serve` on a free port with a fresh base dir; resolves once it listens and a token is issued. */
 async function startServer(stamp: string): Promise<Server> {
-  NodeFS.mkdirSync(NodePath.join(OUT, "port-check-dirs"), { recursive: true });
   const baseDir = NodePath.join(OUT, `port-check-home-${stamp}`);
   const logPath = NodePath.join(OUT, `port-check-server-${stamp}.log`);
   const port = await freePort();
@@ -1020,7 +1039,17 @@ async function connect(url: string, token: string, log: Log): Promise<Rpc> {
   const call = (tag: string, payload: unknown) =>
     new Promise<unknown>((ok, bad) => {
       const id = String(++nextId);
-      calls.set(id, { ok, bad, tag });
+      const timer = setTimeout(() => {
+        calls.delete(id);
+        bad(new Error(`${tag}: no reply in 60s`));
+      }, 60_000);
+      const settled =
+        <A>(f: (a: A) => void) =>
+        (a: A) => {
+          clearTimeout(timer);
+          f(a);
+        };
+      calls.set(id, { ok: settled(ok), bad: settled(bad), tag });
       send({ _tag: "Request", id, tag, payload, headers: [] });
     });
   const stream = (tag: string, payload: unknown) => {
