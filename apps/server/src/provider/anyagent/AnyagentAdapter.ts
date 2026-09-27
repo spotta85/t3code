@@ -141,12 +141,12 @@ export const makeAnyagentAdapter = (
       );
     };
 
-    /** Sets the session's `mode` and waits until its info shows it; a rejected change never does, so fail after 10 s. */
-    const setMode = (t: Thread, mode: ConfigValue) =>
-      call(t.threadId, "configure", () => t.session.configure("mode", mode)).pipe(
+    /** Sets one session option and waits until its info shows it; a rejected change never does, so fail after 10 s. */
+    const setOption = (t: Thread, id: string, value: ConfigValue) =>
+      call(t.threadId, "configure", () => t.session.configure(id, value)).pipe(
         Effect.andThen(
           Effect.gen(function* () {
-            while (t.session.info.configuration.options.mode !== mode) {
+            while (t.session.info.configuration.options[id] !== value) {
               yield* Effect.sleep("20 millis");
             }
           }),
@@ -158,7 +158,7 @@ export const makeAnyagentAdapter = (
               new ProviderAdapterRequestError({
                 provider: kind,
                 method: "configure",
-                detail: `The agent did not apply mode '${mode}'.`,
+                detail: `The agent did not apply ${id} '${value}'.`,
               }),
             ),
         }),
@@ -173,7 +173,8 @@ export const makeAnyagentAdapter = (
         let warning = prePort ? PRE_PORT_RESUME_WARNING : undefined;
         yield* stopSession(input.threadId);
         const cwd = input.cwd ?? config.cwd;
-        const configure = selectedOptions(kind, input.modelSelection, openableOptions(details()));
+        const openable = openableOptions(details(), input.modelSelection?.model);
+        const configure = selectedOptions(kind, input.modelSelection, openable);
         const mcp = t3Mcp(input.threadId, details());
         const wire = native && wireLogPath(native.filePath, input.threadId);
         const open = (token: string | undefined) =>
@@ -241,14 +242,18 @@ export const makeAnyagentAdapter = (
         // A plan turn switches `mode` to plan; the next default turn switches back to the open-time mode.
         const current = t.session.info.configuration.options.mode;
         const mode = plan ? "plan" : current === "plan" ? defaultMode(t) : undefined;
-        if (mode !== undefined && mode !== current) yield* setMode(t, mode);
-        const { details: live, configuration } = t.session.info;
-        const advertised = new Set(live.config_options.map((o) => o.id));
-        for (const [id, value] of Object.entries(
-          selectedOptions(kind, input.modelSelection, advertised),
-        )) {
-          if (value === configuration.options[id]) continue;
-          yield* call(t.threadId, "configure", () => t.session.configure(id, value));
+        if (mode !== undefined && mode !== current) yield* setOption(t, "mode", mode);
+        const model = input.modelSelection?.model;
+        const picks = selectedOptions(
+          kind,
+          input.modelSelection,
+          openableOptions(t.session.info.details, model),
+        );
+        for (const [id, value] of Object.entries(picks)) {
+          if (value === t.session.info.configuration.options[id]) continue;
+          // The model goes first; its own options (effort, fast) exist once it applies, so wait when picks follow.
+          if (id === "model" && Object.keys(picks).length > 1) yield* setOption(t, id, value);
+          else yield* call(t.threadId, "configure", () => t.session.configure(id, value));
         }
         const attachments: string[] = [];
         for (const attachment of input.attachments ?? []) {

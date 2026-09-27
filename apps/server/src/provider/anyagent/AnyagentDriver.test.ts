@@ -344,6 +344,72 @@ describe("AnyagentDriver over the mock binary", () => {
     );
   });
 
+  it.live(
+    "a turn that switches to a model carrying fast applies the model, then the fast pick",
+    () => {
+      const fast = {
+        id: "fast",
+        name: "Fast",
+        kind: "Boolean" as const,
+        current: false,
+        live: true,
+      };
+      const choices = [
+        { value: "small", label: "Small" },
+        { value: "big", label: "Big", options: [fast] },
+      ];
+      const model = { id: "model", name: "Model", kind: { Select: { choices } }, live: true };
+      // The session runs `small`: its options have no `fast` until `big` applies.
+      const details: AgentDetails = {
+        auth: "Unknown",
+        capabilities: { features: [], mcp_transports: [] },
+        config_options: [{ ...model, current: "small" }],
+        commands: [],
+      };
+      const configured: Array<[string, unknown]> = [];
+      let info = { id: "s1", details, configuration: { options: { model: "small" } as Obj } };
+      const session = {
+        id: "s1",
+        get info() {
+          return info;
+        },
+        // No events: the pump waits on a read that never settles.
+        events: () => ({ next: () => new Promise(() => {}) }),
+        configure: async (id: string, value: unknown) => {
+          configured.push([id, value]);
+          info = {
+            ...info,
+            configuration: { options: { ...info.configuration.options, [id]: value } },
+          };
+        },
+        prompt: async () => ({ prompt_id: "p1", kind: { Queued: { position: 0 } } }),
+        close: async () => {},
+      };
+      const runtime = {
+        probe: async () => details,
+        planUsage: async () => Promise.reject(new Error("no plan usage")),
+        open: async () => session,
+      } as unknown as Runtime;
+      const fake = Layer.succeed(AnyagentRuntime, { use: (f) => f(runtime) });
+      return withRuntimeLayer(fake, () =>
+        Effect.gen(function* () {
+          const instance = yield* create(claude, "claudeAgent", yield* Scope.make());
+          yield* instance.adapter.startSession({ threadId: A, cwd, runtimeMode: "full-access" });
+          const options = [{ id: "fastMode", value: true }];
+          yield* instance.adapter.sendTurn({
+            threadId: A,
+            input: "hi",
+            modelSelection: { instanceId: instance.instanceId, model: "big", options },
+          });
+          expect(configured).toEqual([
+            ["model", "big"],
+            ["fast", true],
+          ]);
+        }),
+      );
+    },
+  );
+
   it.live("text generation asks anyagent for one reply and decodes its JSON", () =>
     withRuntime(titleScript(), () =>
       Effect.gen(function* () {
@@ -405,6 +471,8 @@ describe("AnyagentDriver over the mock binary", () => {
 // ---------------------------------------------------------------------------
 // HARNESS
 // ---------------------------------------------------------------------------
+
+type Obj = Record<string, unknown>;
 
 /** Runs `body` with every service the driver needs, over `anyagent serve --mock <script>`. */
 function withRuntime<A, E>(script: string, body: () => Effect.Effect<A, E, Env>) {

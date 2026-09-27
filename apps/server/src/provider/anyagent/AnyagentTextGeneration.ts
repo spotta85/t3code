@@ -41,12 +41,12 @@ const TIMEOUT = "180 seconds";
 
 /**
  * Text generation for `kind` over the agent `launch` names: each call builds T3's prompt, asks anyagent for one reply,
- * and decodes the JSON in it. `advertised()` limits which picked options reach the agent.
+ * and decodes the JSON in it. `advertised(model)` limits which picked options reach the agent.
  */
 export const makeAnyagentTextGeneration = (
   kind: ProviderDriverKind,
   launch: Launch,
-  advertised: () => ReadonlySet<string>,
+  advertised: (model: string) => ReadonlySet<string>,
 ) =>
   Effect.gen(function* () {
     const { use } = yield* AnyagentRuntime;
@@ -69,7 +69,7 @@ export const makeAnyagentTextGeneration = (
               {
                 ...launch.options,
                 dir: cwd,
-                configure: selectedOptions(kind, modelSelection, advertised()),
+                configure: selectedOptions(kind, modelSelection, advertised(modelSelection.model)),
                 attachments: imagePaths(attachmentsDir, attachments),
               },
               prompt,

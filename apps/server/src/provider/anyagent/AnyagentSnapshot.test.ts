@@ -272,12 +272,19 @@ describe("toServerProviderSnapshot", () => {
     expect(() => decode(stamp(snapshot))).not.toThrow();
   });
 
-  it("a fast pick on a model that has fast reaches open and generate, though the current model lacks it", () => {
+  it("open and generate send a fast pick only with a model that carries fast", () => {
     const fast: ConfigOption = {
       id: "fast",
       name: "Fast",
       kind: "Boolean",
       current: false,
+      live: true,
+    };
+    const tier: ConfigOption = {
+      id: "tier",
+      name: "Tier",
+      kind: { Select: { choices: [{ value: "a", label: "a" }] } },
+      current: "a",
       live: true,
     };
     const model: ConfigOption = {
@@ -291,20 +298,24 @@ describe("toServerProviderSnapshot", () => {
           ],
         },
       },
-      current: "default",
+      current: "opus",
       live: true,
     };
-    // The session's options are the current model's: `default` has no `fast`.
-    const details = { ...claude, config_options: [model] };
-    const selection = {
+    // The session's options are the current model's (opus): they include `fast`.
+    const details = { ...claude, config_options: [model, fast, tier] };
+    const pick = (slug: string) => ({
       instanceId: ProviderInstanceId.make("claudeAgent"),
-      model: "opus",
-      options: [{ id: "fastMode", value: true }],
-    };
-    expect(selectedOptions(KIND, selection, openableOptions(details))).toEqual({
-      model: "opus",
-      fast: true,
+      model: slug,
+      options: [
+        { id: "fastMode", value: true },
+        { id: "tier", value: "a" },
+      ],
     });
+    const picked = (slug: string) =>
+      selectedOptions(KIND, pick(slug), openableOptions(details, slug));
+    expect(picked("opus")).toEqual({ model: "opus", fast: true, tier: "a" });
+    // `default` carries no fast: the pick stays home, the shared `tier` still goes.
+    expect(picked("default")).toEqual({ model: "default", tier: "a" });
   });
 
   it("plan usage becomes usage limits: windows by label, banked resets when reported", () => {

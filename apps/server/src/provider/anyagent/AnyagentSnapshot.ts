@@ -19,6 +19,7 @@ import {
   type AgentDetails,
   AnyagentError,
   type AuthStatus,
+  type ConfigChoice,
   type ConfigOption,
   type ConfigValue,
   type PlanUsage,
@@ -119,11 +120,20 @@ export function selectedOptions(
   return Object.fromEntries(picked.filter(([id]) => advertised.has(id)));
 }
 
-/** Option ids `open` and `generate` may set: the probed ones and those a model carries, or just the model when the probe failed. */
-export function openableOptions(details: AgentDetails | null): ReadonlySet<string> {
+/**
+ * Option ids `open`, `generate` and a turn may set for `model`: the session's options no model carries, plus the
+ * ones `model` carries itself; just the model when the probe failed.
+ */
+export function openableOptions(
+  details: AgentDetails | null,
+  model: string | undefined,
+): ReadonlySet<string> {
   if (!details) return new Set(["model"]);
   const options = details.config_options;
-  return new Set([...options.map((o) => o.id), ...perModelIds(options)]);
+  const perModel = perModelIds(options);
+  const own = modelChoices(options).find((c) => c.value === model)?.options ?? [];
+  const shared = options.map((o) => o.id).filter((id) => !perModel.has(id));
+  return new Set([...shared, ...own.map((o) => o.id)]);
 }
 
 /** Whether the agent's live `mode` option offers `plan`: T3's plan turns switch to it. */
@@ -233,9 +243,13 @@ function agentModels(
 
 /** Ids of the options some choice of the `model` option carries itself (effort, fast). */
 function perModelIds(options: ReadonlyArray<ConfigOption>): ReadonlySet<string> {
+  return new Set(modelChoices(options).flatMap((c) => (c.options ?? []).map((o) => o.id)));
+}
+
+/** The choices of the `model` option; none when the agent has no model select. */
+function modelChoices(options: ReadonlyArray<ConfigOption>): ReadonlyArray<ConfigChoice> {
   const model = options.find((o) => o.id === "model");
-  const choices = model && model.kind !== "Boolean" ? model.kind.Select.choices : [];
-  return new Set(choices.flatMap((c) => (c.options ?? []).map((o) => o.id)));
+  return model && model.kind !== "Boolean" ? model.kind.Select.choices : [];
 }
 
 /** anyagent's options T3 does not own, as model option descriptors (select or boolean). */

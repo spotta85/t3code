@@ -190,8 +190,8 @@ export const makeAnyagentDriver = (
         enabled,
         snapshot,
         adapter: yield* makeAnyagentAdapter(kind, launch, () => latest),
-        textGeneration: yield* makeAnyagentTextGeneration(kind, launch, () =>
-          openableOptions(latest),
+        textGeneration: yield* makeAnyagentTextGeneration(kind, launch, (model) =>
+          openableOptions(latest, model),
         ),
       } satisfies ProviderInstance;
     }),
