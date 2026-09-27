@@ -20,12 +20,13 @@ import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/unstable/http";
-import type { AgentDetails, Runtime } from "anyagent-ts";
+import type { AgentDetails, GenerateOptions, Runtime } from "anyagent-ts";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import type { ProviderDriverError } from "../Errors.ts";
+import { NoOpProviderEventLoggers, ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import type { ProviderInstance } from "../ProviderDriver.ts";
 import { makeAnyagentDriver } from "./AnyagentDriver.ts";
 import {
@@ -236,6 +237,49 @@ describe("AnyagentDriver over the mock binary", () => {
       }),
     ),
   );
+
+  it.live("title and branch generation show the agent the image attachments' files", () => {
+    const sent: GenerateOptions[] = [];
+    const details: AgentDetails = {
+      auth: "Unknown",
+      capabilities: { features: ["Images"], mcp_transports: [] },
+      config_options: [],
+      commands: [],
+    };
+    const runtime = {
+      probe: async () => details,
+      generate: async (_agent: string, opts: GenerateOptions) => {
+        sent.push(opts);
+        return JSON.stringify({ title: "Fix login crash", branch: "fix-login-crash" });
+      },
+    } as unknown as Runtime;
+    const fake = Layer.succeed(AnyagentRuntime, { use: (f) => f(runtime) });
+    return withRuntimeLayer(fake, () =>
+      Effect.gen(function* () {
+        const instance = yield* create(claude, "claudeAgent", yield* Scope.make());
+        const image = {
+          type: "image" as const,
+          id: "thread-a-00000000-0000-4000-8000-000000000001",
+          name: "login.png",
+          mimeType: "image/png",
+          sizeBytes: 10,
+        };
+        const file = { ...image, type: "file" as const, name: "notes.txt", mimeType: "text/plain" };
+        const input = {
+          cwd,
+          message: "the login page crashes",
+          attachments: [image, file],
+          modelSelection: { instanceId: instance.instanceId, model: "sonnet" },
+        };
+        yield* instance.textGeneration.generateThreadTitle(input);
+        yield* instance.textGeneration.generateBranchName(input);
+
+        // The image goes as its stored file; the text file stays a name in the prompt.
+        const path = NodePath.join((yield* ServerConfig).attachmentsDir, `${image.id}.png`);
+        expect(sent.map((o) => o.attachments)).toEqual([[path], [path]]);
+      }),
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -262,6 +306,7 @@ function withRuntimeLayer<A, E>(
     Layer.mock(BackgroundPolicy.BackgroundPolicy)({
       shouldRunScopeWork: () => Effect.succeed(false),
     }),
+    Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers),
     // Version advisories would ask npm; the enrichment logs this failure and moves on.
     Layer.succeed(
       HttpClient.HttpClient,

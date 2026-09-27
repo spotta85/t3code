@@ -5,6 +5,7 @@
  * @module AnyagentTextGeneration
  */
 import {
+  type ChatAttachment,
   type ModelSelection,
   type ProviderDriverKind,
   TextGenerationError,
@@ -15,6 +16,8 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 
+import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { ServerConfig } from "../../config.ts";
 import type { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import {
   buildBranchNamePrompt,
@@ -47,21 +50,27 @@ export const makeAnyagentTextGeneration = (
 ) =>
   Effect.gen(function* () {
     const { use } = yield* AnyagentRuntime;
+    const { attachmentsDir } = yield* ServerConfig;
     const fileSystem = yield* FileSystem.FileSystem;
 
-    /** One reply for `prompt` in `cwd`, decoded with `schema`; every failure is a TextGenerationError. */
+    /** One reply for `prompt` in `cwd`, with the images among `attachments`, decoded with `schema`; every failure is a TextGenerationError. */
     const runJson = <S extends Schema.Top>(
       operation: Operation,
       cwd: string,
       modelSelection: ModelSelection,
       { prompt, outputSchema }: { prompt: string; outputSchema: S },
+      attachments: ReadonlyArray<ChatAttachment> = [],
     ): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
       Effect.tryPromise({
         try: () =>
           use((runtime) =>
             runtime.generate(
               agent,
-              { dir: cwd, configure: selectedOptions(kind, modelSelection, advertised()) },
+              {
+                dir: cwd,
+                configure: selectedOptions(kind, modelSelection, advertised()),
+                attachments: imagePaths(attachmentsDir, attachments),
+              },
               prompt,
             ),
           ),
@@ -123,6 +132,7 @@ export const makeAnyagentTextGeneration = (
           input.cwd,
           input.modelSelection,
           buildBranchNamePrompt({ message: input.message, attachments: input.attachments }),
+          input.attachments,
         ).pipe(Effect.map((out) => ({ branch: sanitizeBranchFragment(out.branch) }))),
       // Titles need only the prompt, so they run in an empty temp dir, not the checkout.
       generateThreadTitle: (input) =>
@@ -141,6 +151,7 @@ export const makeAnyagentTextGeneration = (
                 linkedContext: input.linkedContext,
                 attachments: input.attachments,
               }),
+              input.attachments,
             ),
           ),
           Effect.scoped,
@@ -155,6 +166,15 @@ export const makeAnyagentTextGeneration = (
 // ---------------------------------------------------------------------------
 // HELPERS
 // ---------------------------------------------------------------------------
+
+/** The stored files of the image attachments; other attachments stay names in the prompt. */
+function imagePaths(attachmentsDir: string, attachments: ReadonlyArray<ChatAttachment>): string[] {
+  return attachments.flatMap((attachment) =>
+    attachment.type === "image"
+      ? (resolveAttachmentPath({ attachmentsDir, attachment }) ?? [])
+      : [],
+  );
+}
 
 /** T3's text generation error for `operation`. */
 function failure(operation: Operation, detail: string, cause?: unknown) {
