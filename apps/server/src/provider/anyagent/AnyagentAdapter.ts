@@ -539,7 +539,7 @@ function sessionInstructions(
   kind: ProviderDriverKind,
   mcp: McpProviderSession.McpProviderSessionConfig | undefined,
 ): string {
-  const runtime = buildRuntimeInstructions({ harness: PROVIDER_DISPLAY_NAMES[kind] ?? kind });
+  const runtime = buildRuntimeInstructions(PROVIDER_DISPLAY_NAMES[kind] ?? kind);
   const has = (capability: string) => mcp?.capabilities.has(capability) ?? false;
   const tools =
     kind === "codex" ? toolInstructions({ browser: has("preview"), device: has("device") }) : "";
