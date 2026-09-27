@@ -62,6 +62,7 @@ provider on for its run. The last run is under "Live check" below.
 | T3 MCP tools (browser, devices, PR linking)        | Every agent                                                                                                                                                                                      | Same: all six take T3's server                                                                                                                                                                                                             |
 | Per-turn token usage                               | claude, codex, opencode                                                                                                                                                                          | Same; cursor, grok and antigravity (its ACP server) report none                                                                                                                                                                            |
 | Tool denied (a rule refused a tool without asking) | claude                                                                                                                                                                                           | Same                                                                                                                                                                                                                                       |
+| cursor in approval-required threads                | cursor's read-only `ask` mode                                                                                                                                                                    | cursor writes files without asking: its ACP agent asks permission for commands, not for edits                                                                                                                                              |
 
 Each row has a matching gaps.md row in the anyagent repo.
 
@@ -91,7 +92,8 @@ turn with a typed error.
   Sign in with `agy` itself.
 - **Native provider log.** `ProviderEventLoggers.native` is no longer written. When it is on,
   anyagent records each thread's raw wire beside it instead: `events.<thread>.wire.log`, one
-  `{"dir":"in"|"out","frame":…}` per line, unredacted. The canonical log is unchanged.
+  `{"dir":"in"|"out","frame":…}` per line. It is unredacted except declared MCP servers' header
+  and env values, which anyagent writes as `<redacted>`. The canonical log is unchanged.
 
 ## T3's `t3-code` MCP server
 
