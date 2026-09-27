@@ -564,9 +564,14 @@ describe("AnyagentAdapter over the mock binary", () => {
               expect(withDevices).toMatchObject({
                 args: ["--verbose"],
                 config_home: "/homes/work",
-                env: { FOO: "1", AGENT_DEVICE_X: "1", PATH: `/t3/shim:${process.env.PATH}` },
               });
-              expect(plain).toMatchObject({ ...launch, env: { FOO: "1" } });
+              expect(withDevices?.env).toEqual({
+                FOO: "1",
+                AGENT_DEVICE_X: "1",
+                PATH: `/t3/shim:${process.env.PATH}`,
+              });
+              expect(plain).toMatchObject({ args: ["--verbose"], config_home: "/homes/work" });
+              expect(plain?.env).toEqual({ FOO: "1" });
             }),
           { kind: "codex", mcpTransports: ["Http"], launch },
         );
